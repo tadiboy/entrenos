@@ -1,9 +1,13 @@
 // Persistencia local (localStorage), estadísticas semanales y respaldo JSON.
-import { defaultRoutines } from './data.js';
+import { defaultRoutines, defaultExpress, isCircuit } from './data.js';
 
+// La clave conserva su nombre de la v1 para no mover datos; la versión real va en `schema`.
 const KEY = 'entrenos.v1';
 const ACTIVE_KEY = 'entrenos.activa.v1';
-export const SCHEMA = 1;
+// Copia intacta de los datos tal como estaban antes de migrar, por si algo sale mal.
+const PRE_MIGRATION_KEY = 'entrenos.respaldo-antes-de-migrar';
+// 1: rutinas de fuerza. 2: agrega rutinas en circuito (Rutina Express).
+export const SCHEMA = 2;
 export const WEEKLY_GOAL = 3;
 
 function blank() {
@@ -20,11 +24,20 @@ let db = null;
 
 export function load() {
   if (db) return db;
+  let raw = null;
   try {
-    const raw = localStorage.getItem(KEY);
+    raw = localStorage.getItem(KEY);
     db = raw ? normalize(JSON.parse(raw)) : blank();
   } catch {
     db = blank();
+    return db;
+  }
+  // Datos de una versión anterior: se guarda una copia tal cual y se escribe ya migrado.
+  if (raw && JSON.parse(raw)?.schema !== SCHEMA) {
+    try {
+      if (!localStorage.getItem(PRE_MIGRATION_KEY)) localStorage.setItem(PRE_MIGRATION_KEY, raw);
+    } catch { /* sin espacio: la migración sigue solo en memoria */ }
+    save();
   }
   return db;
 }
@@ -38,12 +51,42 @@ export function save() {
   }
 }
 
+const int = (v, lo, hi, fallback) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
+};
+
+/**
+ * Migra y sanea las rutinas. Las del usuario se quedan como están; si no hay ningún
+ * circuito (datos de la v1), se agrega la Rutina Express al final.
+ */
+function migrateRoutines(routines) {
+  const out = routines.map((r) => {
+    if (!isCircuit(r)) return r;
+    const d = defaultExpress();
+    return {
+      ...r,
+      days: [], // a demanda: nunca se asigna a días
+      rounds: int(r.rounds, 1, 10, d.rounds),
+      work: int(r.work, 10, 180, d.work),
+      rest: int(r.rest, 0, 120, d.rest),
+    };
+  });
+  if (!out.some(isCircuit)) {
+    const express = defaultExpress();
+    const ids = new Set(out.map((r) => r.id));
+    while (ids.has(express.id)) express.id += '-x';
+    out.push(express);
+  }
+  return out;
+}
+
 function normalize(data) {
   const base = blank();
   if (!data || typeof data !== 'object') return base;
   return {
     schema: SCHEMA,
-    routines: Array.isArray(data.routines) && data.routines.length ? data.routines : base.routines,
+    routines: Array.isArray(data.routines) && data.routines.length ? migrateRoutines(data.routines) : base.routines,
     sessions: Array.isArray(data.sessions) ? data.sessions : [],
     last: data.last && typeof data.last === 'object' ? data.last : {},
     settings: { ...base.settings, ...(data.settings || {}) },
