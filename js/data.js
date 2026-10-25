@@ -42,7 +42,52 @@ export function defaultRoutines() {
         { id: 'escaladores', name: 'Escaladores', sets: 3, mode: 'time', seconds: 30, weighted: false },
       ],
     },
+    defaultExpress(),
   ];
+}
+
+/**
+ * Rutina Express: circuito de emergencia, a demanda (sin días).
+ * 2 rondas de 40 s de trabajo y 20 s de descanso por ejercicio, sin descanso extra entre rondas.
+ */
+export const EXPRESS_ID = 'express';
+export function defaultExpress() {
+  return {
+    id: EXPRESS_ID,
+    kind: 'circuit',
+    name: 'Rutina Express',
+    days: [],
+    rounds: 2,
+    work: 40,
+    rest: 20,
+    exercises: [
+      { id: 'x-swings', name: 'Swings con kettlebell' },
+      { id: 'x-goblet', name: 'Sentadilla goblet' },
+      { id: 'x-lagartijas', name: 'Lagartijas' },
+      { id: 'x-dominadas', name: 'Dominadas o colgada en barra' },
+      { id: 'x-plancha', name: 'Plancha' },
+    ],
+  };
+}
+
+export const isCircuit = (r) => r?.kind === 'circuit';
+
+/** Intervalos de trabajo de un circuito (rondas × ejercicios). */
+export function circuitIntervals(r) {
+  return r.rounds * r.exercises.length;
+}
+
+/** Duración real del circuito en segundos: no hay descanso después del último ejercicio. */
+export function circuitSeconds(r) {
+  const n = circuitIntervals(r);
+  return n * r.work + Math.max(0, n - 1) * r.rest;
+}
+
+/** "9 min 40 s", "10 min". */
+export function durationText(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s ? `${m} min ${s} s` : `${m} min`;
 }
 
 export function sideLabel(ex) {
@@ -67,12 +112,15 @@ export function prescription(ex) {
   return `${ex.sets} × ${t}${side ? ' ' + side : ''}`;
 }
 
+/** Series de una rutina de fuerza; en un circuito, sus intervalos de trabajo. */
 export function totalSets(routine) {
+  if (isCircuit(routine)) return circuitIntervals(routine);
   return routine.exercises.reduce((n, ex) => n + ex.sets, 0);
 }
 
 /** Duración estimada en minutos (trabajo aproximado por serie + descansos). */
 export function estimateMinutes(routine) {
+  if (isCircuit(routine)) return Math.round(circuitSeconds(routine) / 60);
   let work = 0;
   for (const ex of routine.exercises) {
     let perSet;
