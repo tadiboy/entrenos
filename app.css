@@ -340,8 +340,28 @@ h1:focus { outline: none; }
 
 /* ---- Hoy ----------------------------------------------------------------- */
 
-.topline { padding-bottom: var(--s2); }
+.topline { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: var(--s2); }
 .date { font-size: var(--t-md); font-weight: 700; color: var(--fg2); }
+
+/* "Poco tiempo": entrada directa a la Rutina Express, siempre en el mismo lugar de Hoy. */
+.btn-quick {
+  flex: none;
+  min-height: 48px;
+  padding: 0 14px 0 10px;
+  gap: 6px;
+  border-color: var(--accent);
+  color: var(--accent);
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(1.25rem, 5.6vw, 1.625rem);
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.topline .date { text-wrap: balance; }
+.editor .hint { text-wrap: pretty; }
+.btn-quick .icon { width: 24px; height: 24px; stroke-width: 2.5; }
 
 .week { display: grid; gap: var(--s1); }
 .week-strip {
@@ -479,7 +499,45 @@ h1:focus { outline: none; }
 }
 
 .setline { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); }
-.setline-text { font-size: var(--t-lg); font-weight: 800; }
+.setline-text { font-size: var(--t-lg); font-weight: 800; font-variant-numeric: tabular-nums; }
+/* Circuito: la fase se escribe con la letra de rótulo, subrayada con trazo de pintura. */
+.phase-tag {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 2.25rem;
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+  text-decoration: underline;
+  text-decoration-thickness: 4px;
+  text-underline-offset: 6px;
+}
+.session-circuit .target-time { padding: var(--s1) 0 0; }
+.session-circuit .target-unit { font-weight: 700; }
+/* En pantallas bajas (iPhone SE) el reloj cede alto para que "Sigue" no quede bajo el dock. */
+.session-circuit .timer { font-size: min(46vw, 15rem, 25vh); }
+.session-circuit .next-what { font-size: clamp(1.625rem, 8vw, 2.25rem); }
+@media (max-height: 620px) and (orientation: portrait) {
+  .session-circuit .timer { font-size: min(46vw, 22vh); }
+  .session-circuit .plate { min-height: 80px; }
+  .session-circuit { padding-bottom: calc(env(safe-area-inset-bottom) + 120px); }
+}
+/* En pausa el reloj queda trazado sin rellenar, como rótulo antes de pintarse; el trazo
+   conserva el contraste completo de la letra del muro. El estado se escribe en rótulo. */
+.session-circuit[data-paused='true'] .timer {
+  color: var(--bg);
+  -webkit-text-stroke: 0.03em var(--fg);
+  paint-order: stroke fill;
+  text-shadow: none;
+}
+.session-circuit[data-paused='true'] .target-unit {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: 2.25rem;
+  line-height: 1;
+  text-transform: uppercase;
+  margin-top: var(--s1);
+}
 .pips { display: flex; gap: 6px; }
 .pips li { width: 28px; height: 14px; border: 2px solid var(--fg); border-radius: 2px; }
 .pips li.is-done { background: var(--fg); }
@@ -684,6 +742,7 @@ h1:focus { outline: none; }
 .h-name { grid-area: name; font-size: var(--t-lg); font-weight: 800; }
 .h-meta { grid-area: meta; font-size: var(--t-sm); font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .h-tag { font-size: var(--t-xs); font-weight: 800; padding: 2px 6px; border-radius: 2px; background: var(--azul-hondo); color: var(--azul-texto); vertical-align: middle; }
+.h-tag-express { background: var(--amarillo); color: var(--tinta); }
 .h-detail { display: grid; gap: 6px; padding-bottom: var(--s2); }
 .h-detail li { display: flex; justify-content: space-between; gap: var(--s2); font-size: var(--t-sm); }
 .h-ex { font-weight: 600; }
