@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0b2e8a"/>
+  <g transform="translate(256 256) scale(0.9) translate(-256 -258)"><g transform="translate(16 16)">
+  <path fill="#031650" fill-rule="evenodd" d="M146 262V196a110 102 0 0 1 220 0v66h-48v-62a62 56 0 0 0-124 0v62Z"/>
+  <path fill="#031650" d="M181.4 420A128 128 0 1 1 330.6 420Z"/></g>
+  <path fill="#ffcd00" fill-rule="evenodd" d="M146 262V196a110 102 0 0 1 220 0v66h-48v-62a62 56 0 0 0-124 0v62Z"/>
+  <path fill="#ffcd00" d="M181.4 420A128 128 0 1 1 330.6 420Z"/></g>
+</svg>
