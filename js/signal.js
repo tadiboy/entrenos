@@ -43,6 +43,32 @@ export function done(settings) {
   }
 }
 
+function buzz(settings, pattern) {
+  if (settings.vibrate && 'vibrate' in navigator) {
+    try { navigator.vibrate(pattern); } catch { /* sin vibración */ }
+  }
+}
+
+/** Circuito, trabajo → descanso: dos tonos bajando + vibración doble. */
+export function toRest(settings) {
+  if (settings.sound && ctx) {
+    const t = ctx.currentTime;
+    tone(988, t, 0.14);
+    tone(659, t + 0.18, 0.32);
+  }
+  buzz(settings, [200, 90, 200]);
+}
+
+/** Circuito, descanso → trabajo: dos tonos subiendo + vibración larga. */
+export function toWork(settings) {
+  if (settings.sound && ctx) {
+    const t = ctx.currentTime;
+    tone(784, t, 0.14);
+    tone(1175, t + 0.18, 0.32);
+  }
+  buzz(settings, [420]);
+}
+
 // ---- Pantalla encendida (Wake Lock) ----------------------------------------
 
 let lock = null;
