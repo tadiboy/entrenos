@@ -1,6 +1,7 @@
 import {
   DAY_LETTERS, DAY_NAMES, WEEK_ORDER, MODES,
   sideLabel, targetText, prescription, totalSets, estimateMinutes, slugify, defaultRoutines,
+  isCircuit, circuitIntervals, circuitSeconds, durationText,
 } from './data.js';
 import * as store from './store.js';
 import * as signal from './signal.js';
@@ -15,6 +16,14 @@ const WALLS = { azul: '#0b2e8a', amarillo: '#ffcd00', rosa: '#c8005f', verde: '#
 
 let db = store.load();
 let active = store.loadActive();
+// Un circuito que quedó corriendo al cerrar la app vuelve en pausa, en la fase donde iba,
+// en vez de "correr" de golpe los intervalos que no hiciste.
+if (active?.kind === 'circuit' && !active.paused) {
+  const left = active.phaseEnd - Date.now();
+  active.paused = true;
+  active.pausedLeft = left > 0 ? left : active.phaseTotal;
+  store.saveActive(active);
+}
 let lastDone = null;
 let ticker = null;
 let currentWall = null;
@@ -28,6 +37,12 @@ const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const routineById = (id) => db.routines.find((r) => r.id === id);
+// Las rutinas de fuerza siguen la rotación por días; los circuitos van a demanda.
+const strengthRoutines = () => db.routines.filter((r) => !isCircuit(r));
+const expressRoutine = () => db.routines.find(isCircuit);
+const isCircuitSession = (s) => s?.kind === 'circuit';
+/** "10 intervalos" en un circuito, "17 series" en fuerza. */
+const unitsText = (n, circuit) => plural(n, circuit ? 'intervalo' : 'serie', circuit ? 'intervalos' : 'series');
 
 function fmtClock(totalSec) {
   const s = Math.max(0, Math.round(totalSec));
@@ -81,6 +96,7 @@ const ICON = {
   abajo: '<path d="m6 10 6 6 6-6"/>',
   quitar: '<path d="M6 6l12 12M18 6 6 18"/>',
   atras: '<path d="M15 5l-7 7 7 7"/>',
+  reloj: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V9.5M9.5 3h5M18 6.5l1.5-1.5"/>',
 };
 const icon = (name, cls = 'icon') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON[name]}</svg>`;
 
@@ -188,9 +204,10 @@ function nextTraining(now) {
 function viewToday() {
   const now = new Date();
   const dow = now.getDay();
-  const todays = db.routines.filter((r) => r.days.includes(dow));
+  const todays = strengthRoutines().filter((r) => r.days.includes(dow));
   const suggested = todays[0];
-  const others = db.routines.filter((r) => r !== suggested);
+  const others = strengthRoutines().filter((r) => r !== suggested);
+  const express = expressRoutine();
   const dateText = cap(fmtDate(now, { weekday: 'long', day: 'numeric', month: 'long' }));
 
   let resume = '';
@@ -198,7 +215,7 @@ function viewToday() {
     const done = active.log.length;
     resume = `
       <section class="resume" aria-label="Sesión sin terminar">
-        <p><strong>${esc(active.routine.name)} sin terminar.</strong> Llevas ${done} de ${totalSets(active.routine)} series.</p>
+        <p><strong>${esc(active.routine.name)} sin terminar.</strong> Llevas ${done} de ${unitsText(totalSets(active.routine), isCircuit(active.routine))}.</p>
         <a class="btn btn-ink" href="#/sesion" data-testid="resume-session">Continuar sesión</a>
       </section>`;
   }
@@ -232,7 +249,7 @@ function viewToday() {
       <section class="alt" aria-label="Entrenar de todos modos">
         <h2 class="alt-h">¿Quieres entrenar de todos modos?</h2>
         <div class="choose-list">
-          ${db.routines.map((r) => `
+          ${strengthRoutines().map((r) => `
             <button class="choose" data-action="start" data-routine="${esc(r.id)}" data-testid="choose-routine"${active ? ' disabled' : ''}>
               <span class="choose-name">${esc(r.name)}</span>
               <span class="choose-meta">${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ≈ ${estimateMinutes(r)} min</span>
@@ -242,7 +259,12 @@ function viewToday() {
   }
 
   return shell('hoy', `
-    <header class="topline"><p class="date">${esc(dateText)}</p></header>
+    <header class="topline">
+      <p class="date">${esc(dateText)}</p>
+      ${express ? `
+      <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(express.id)}" data-testid="quick-routine"
+        aria-label="Poco tiempo: ${esc(express.name)}, ${esc(durationText(circuitSeconds(express)))}"${active ? ' disabled' : ''}>${icon('reloj')}<span>Poco tiempo</span></button>` : ''}
+    </header>
     ${weekStrip(now)}
     ${resume}
     ${main}`);
@@ -265,6 +287,12 @@ function startSession(routineId) {
     startedAt: new Date().toISOString(),
     log: [],
   };
+  if (isCircuit(r)) {
+    // El circuito corre solo desde ya: cada fase termina en phaseEnd y encadena la siguiente.
+    Object.assign(active, { kind: 'circuit', round: 0, paused: false, pausedLeft: null, beep: null });
+    active.phaseTotal = r.work * 1000;
+    active.phaseEnd = Date.now() + active.phaseTotal;
+  }
   store.saveActive(active);
   if (location.hash === '#/sesion') route();
   else location.hash = '#/sesion';
@@ -291,7 +319,7 @@ function sessionTop() {
   const total = active.routine.exercises.length;
   return `
     <header class="sbar">
-      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">Salir</button>
+      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">${active.kind === 'circuit' ? 'Terminar' : 'Salir'}</button>
       <p class="sbar-pos">Ejercicio ${Math.min(active.ex + 1, total)} de ${total}</p>
       <p class="sbar-clock" aria-label="Tiempo de sesión"><span data-elapsed>${fmtClock((Date.now() - new Date(active.startedAt)) / 1000)}</span></p>
     </header>`;
@@ -399,6 +427,155 @@ function viewRest() {
     </main>`;
 }
 
+// ---- Circuito (Rutina Express): corre solo, 40/20, ronda tras ronda --------
+
+function circuitLeftMs() {
+  return active.paused ? active.pausedLeft : Math.max(0, active.phaseEnd - Date.now());
+}
+
+/** Qué viene después del intervalo de trabajo en curso. */
+function circuitAfterWork() {
+  const r = active.routine;
+  const n = r.exercises.length;
+  const lastOfRound = active.ex === n - 1;
+  if (lastOfRound && active.round === r.rounds - 1) {
+    return { what: 'Último ejercicio', detail: 'Al sonar, terminaste' };
+  }
+  const next = lastOfRound ? r.exercises[0] : r.exercises[active.ex + 1];
+  const pre = r.rest ? `Tras ${r.rest} s de descanso` : 'Sin descanso';
+  return {
+    what: `Sigue: ${next.name}`,
+    detail: lastOfRound ? `${pre} · ronda ${active.round + 2}` : pre,
+  };
+}
+
+function viewCircuit() {
+  const r = active.routine;
+  const ex = curEx();
+  const rest = active.phase === 'rest';
+  const left = Math.ceil(circuitLeftMs() / 1000);
+  const round = `Ronda ${active.round + 1} de ${r.rounds}`;
+  const pauseBtn = active.paused
+    ? '<button class="btn plate" data-action="resume-circuit" data-testid="resume-circuit">Seguir</button>'
+    : '<button class="btn plate" data-action="pause-circuit" data-testid="pause-circuit">Pausa</button>';
+  const state = active.paused ? 'En pausa' : rest ? 'Respira, ya viene' : 'Dale hasta que suene';
+
+  if (rest) {
+    const firstOfRound = active.ex === 0;
+    // La pintura ya subida se dibuja desde el render: en pausa el ticker no la actualiza.
+    const risen = (1 - circuitLeftMs() / active.phaseTotal).toFixed(4);
+    return `
+      <div class="rise" aria-hidden="true"><div class="rise-fill" data-rise style="transform: scaleY(${risen})"></div></div>
+      ${sessionTop()}
+      <main class="session session-rest session-circuit" data-testid="session" data-phase="rest" data-paused="${!!active.paused}">
+        <h1 class="ex-name" data-testid="circuit-phase">Descanso</h1>
+        <p class="setline-text" data-testid="circuit-round">${round}</p>
+        <div class="target target-time">
+          <div class="timer" data-testid="timer" role="timer" aria-label="Descanso restante">${digits(fmtClock(left))}</div>
+          <p class="target-unit" data-testid="circuit-state">${state}</p>
+        </div>
+        <p class="next" data-testid="next-up">
+          <span class="next-what">Sigue: ${esc(ex.name)}</span>
+          <span class="next-detail">${firstOfRound ? `Empieza la ronda ${active.round + 1} · ` : ''}${r.work} s de trabajo</span></p>
+        <div class="dock">${pauseBtn}</div>
+      </main>`;
+  }
+
+  const after = circuitAfterWork();
+  return `
+    ${sessionTop()}
+    <main class="session session-circuit" data-testid="session" data-phase="work" data-paused="${!!active.paused}">
+      <h1 class="ex-name" data-testid="circuit-exercise">${esc(ex.name)}</h1>
+      <div class="setline">
+        <p class="phase-tag" data-testid="circuit-phase">Trabajo</p>
+        <p class="setline-text" data-testid="circuit-round">${round}</p>
+      </div>
+      <div class="target target-time">
+        <div class="timer" data-testid="timer" role="timer" aria-label="Trabajo restante">${digits(fmtClock(left))}</div>
+        <p class="target-unit" data-testid="circuit-state">${state}</p>
+      </div>
+      <p class="next" data-testid="next-up">
+        <span class="next-what">${esc(after.what)}</span>
+        <span class="next-detail">${esc(after.detail)}</span></p>
+      <div class="dock">${pauseBtn}</div>
+    </main>`;
+}
+
+/**
+ * Cierra la fase en curso y abre la siguiente. La nueva fase empieza en el phaseEnd
+ * anterior, no en "ahora": el circuito no acumula retraso aunque el temporizador se atrase.
+ * Devuelve 'rest', 'work' o 'done'.
+ */
+function advanceCircuit() {
+  const r = active.routine;
+  const n = r.exercises.length;
+  if (active.phase === 'work') {
+    const ex = curEx();
+    active.log.push({ exId: ex.id, exName: ex.name, set: active.round + 1, seconds: r.work });
+    if (active.ex === n - 1 && active.round === r.rounds - 1) return 'done';
+    if (active.ex === n - 1) { active.ex = 0; active.round += 1; } else active.ex += 1;
+    if (r.rest > 0) {
+      active.phase = 'rest';
+      active.phaseTotal = r.rest * 1000;
+    } else {
+      active.phaseTotal = r.work * 1000;
+    }
+  } else {
+    active.phase = 'work';
+    active.phaseTotal = r.work * 1000;
+  }
+  active.phaseEnd += active.phaseTotal;
+  active.beep = null;
+  return active.phase;
+}
+
+function tickCircuit(now) {
+  if (active.paused) return;
+  let changed = null;
+  while (active && !active.paused && now >= active.phaseEnd) {
+    changed = advanceCircuit();
+    if (changed === 'done') {
+      signal.done(db.settings);
+      complete(false);
+      return;
+    }
+  }
+  if (changed) {
+    store.saveActive(active);
+    if (changed === 'rest') {
+      signal.toRest(db.settings);
+      announce(`Descanso de ${active.routine.rest} segundos. Sigue ${curEx().name}.`);
+    } else {
+      signal.toWork(db.settings);
+      announce(`Trabajo: ${curEx().name}, ronda ${active.round + 1}.`);
+    }
+    renderSession();
+    return;
+  }
+  updateCountdown(active.phaseEnd - now, active.phaseTotal);
+}
+
+function pauseCircuit() {
+  if (!active || active.kind !== 'circuit' || active.paused) return;
+  active.paused = true;
+  active.pausedLeft = Math.max(0, active.phaseEnd - Date.now());
+  store.saveActive(active);
+  renderSession(false);
+  announce('En pausa.');
+}
+
+function resumeCircuit() {
+  if (!active || active.kind !== 'circuit' || !active.paused) return;
+  signal.unlockAudio();
+  active.paused = false;
+  active.phaseEnd = Date.now() + active.pausedLeft;
+  active.pausedLeft = null;
+  active.beep = null;
+  store.saveActive(active);
+  renderSession(false);
+  announce('Sigue el circuito.');
+}
+
 function viewDone() {
   const s = lastDone;
   if (!s) return null;
@@ -412,7 +589,7 @@ function viewDone() {
       <h1 class="ex-name done-h">${s.partial ? 'Guardado' : 'Listo'}</h1>
       <p class="done-sub">${esc(s.routineName)}${s.partial ? ', sesión parcial' : ''}</p>
       <div class="streak done-lines">
-        <p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${s.sets.length === 1 ? 'serie' : 'series'}</p>
+        <p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${unitsText(s.sets.length, isCircuitSession(s)).replace(/^\d+ /, '')}</p>
         <p class="streak-line"><span class="num">${count}</span> de ${store.WEEKLY_GOAL} esta semana</p>
         ${st ? `<p class="streak-line"><span class="num">${st}</span> ${st === 1 ? 'semana' : 'semanas'} de racha</p>` : ''}
       </div>
@@ -437,7 +614,8 @@ function renderSession(paint = true) {
     return;
   }
   signal.keepAwake(true);
-  if (active.phase === 'rest') mount(viewRest(), 'rosa', { paint });
+  if (active.kind === 'circuit') mount(viewCircuit(), active.phase === 'rest' ? 'rosa' : 'amarillo', { paint });
+  else if (active.phase === 'rest') mount(viewRest(), 'rosa', { paint });
   else mount(viewWork(), 'amarillo', { paint });
   startTicker();
   tick();
@@ -515,6 +693,7 @@ function complete(partial) {
     partial: !!partial,
     sets: active.log,
   };
+  if (active.kind === 'circuit') record.kind = 'circuit';
   db.sessions.push(record);
   persist();
   active = null;
@@ -540,13 +719,23 @@ function tick() {
   const now = Date.now();
   const elapsed = app.querySelector('[data-elapsed]');
   if (elapsed) elapsed.textContent = fmtClock((now - new Date(active.startedAt)) / 1000);
+  if (active.kind === 'circuit') { tickCircuit(now); return; }
 
   let end; let total;
   if (active.phase === 'rest') { end = active.restEnd; total = active.restTotal; }
   else if (active.phase === 'timed') { end = active.timedEnd; total = active.timedTotal; }
   else return;
 
-  const leftMs = Math.max(0, end - now);
+  const leftMs = updateCountdown(end - now, total);
+  if (leftMs <= 0) {
+    if (active.phase === 'rest') { signal.done(db.settings); endRest(); }
+    else endTimed(false);
+  }
+}
+
+/** Pinta el reloj y la pintura que sube; pita en 3, 2, 1. Devuelve los ms que faltan. */
+function updateCountdown(remainingMs, total) {
+  const leftMs = Math.max(0, remainingMs);
   const leftSec = Math.ceil(leftMs / 1000);
   const timer = app.querySelector('.screen:last-child [data-testid="timer"]');
   if (timer) {
@@ -563,14 +752,26 @@ function tick() {
     active.beep = leftSec;
     signal.tick(db.settings);
   }
-  if (leftMs <= 0) {
-    if (active.phase === 'rest') { signal.done(db.settings); endRest(); }
-    else endTimed(false);
-  }
+  return leftMs;
 }
 
+let autoPaused = false;
 function openExitSheet() {
   const n = active.log.length;
+  if (active.kind === 'circuit') {
+    // Mientras decides, el circuito se detiene; si sigues, retoma donde iba.
+    autoPaused = !active.paused;
+    pauseCircuit();
+    openSheet(`
+      <h2 id="sheet-title">¿Terminar el circuito?</h2>
+      <p>${n ? `Llevas ${n} de ${unitsText(circuitIntervals(active.routine), true)}. Puedes guardarlos como sesión parcial.` : 'Todavía no terminas ningún ejercicio.'}</p>
+      <div class="sheet-actions">
+        ${n ? '<button class="btn plate" data-action="save-partial" data-testid="save-partial">Terminar y guardar</button>' : ''}
+        <button class="btn btn-line" data-action="close-sheet">Seguir entrenando</button>
+        <button class="btn btn-danger" data-action="discard-session">Descartar sesión</button>
+      </div>`);
+    return;
+  }
   openSheet(`
     <h2 id="sheet-title">¿Salir de la sesión?</h2>
     <p>${n ? `Llevas ${n} ${n === 1 ? 'serie' : 'series'}. Puedes guardarlas como sesión parcial.` : 'Todavía no anotas ninguna serie.'}</p>
@@ -628,8 +829,8 @@ function viewHistory() {
           <details>
             <summary>
               <span class="h-date">${esc(cap(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })))}</span>
-              <span class="h-name">${esc(s.routineName)}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
-              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${plural(s.sets.length, 'serie', 'series')}</span>
+              <span class="h-name">${esc(s.routineName)}${isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>' : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
+              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${unitsText(s.sets.length, isCircuitSession(s))}</span>
             </summary>
             <ul class="h-detail">${summarizeSets(s.sets)}</ul>
             <button class="btn-quiet btn-quiet-danger" data-action="delete-session" data-id="${esc(s.id)}">Borrar esta sesión</button>
@@ -666,8 +867,10 @@ function viewRoutines() {
       ${db.routines.map((r) => `
         <li class="r-item">
           <h2 class="r-name">${esc(r.name)}</h2>
-          <p class="r-days">${esc(daysText(r.days))}</p>
-          <p class="r-meta">${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s</p>
+          <p class="r-days">${isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy' : esc(daysText(r.days))}</p>
+          <p class="r-meta">${isCircuit(r)
+            ? `Circuito · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(r.rounds, 'ronda', 'rondas')} · ${r.work} s trabajo / ${r.rest} s descanso · ${durationText(circuitSeconds(r))}`
+            : `${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s`}</p>
           <a class="btn btn-line" href="#/rutinas/${encodeURIComponent(r.id)}" data-testid="edit-routine-${esc(r.id)}">Editar ${esc(r.name)}</a>
         </li>`).join('')}
     </ol>
@@ -722,9 +925,67 @@ function numField(id, label, value, min, max, step, i, field) {
     </div>`;
 }
 
+function circuitExEditor(ex, i, n) {
+  const id = `e${i}`;
+  return `
+    <li class="ex-edit ex-edit-circuit">
+      <div class="ex-edit-head">
+        <span class="ex-edit-n num" aria-hidden="true">${i + 1}</span>
+        <label class="sr-only" for="${id}-name">Nombre del ejercicio ${i + 1}</label>
+        <input class="ex-edit-name" id="${id}-name" type="text" value="${esc(ex.name)}" data-ex="${i}" data-field="name" maxlength="60" required>
+      </div>
+      <div class="ex-edit-actions">
+        <button type="button" class="icon-btn" data-action="ex-up" data-ex="${i}" aria-label="Subir ${esc(ex.name)}"${i === 0 ? ' disabled' : ''}>${icon('arriba')}</button>
+        <button type="button" class="icon-btn" data-action="ex-down" data-ex="${i}" aria-label="Bajar ${esc(ex.name)}"${i === n - 1 ? ' disabled' : ''}>${icon('abajo')}</button>
+        <button type="button" class="btn-quiet btn-quiet-danger" data-action="ex-remove" data-ex="${i}">Quitar</button>
+      </div>
+    </li>`;
+}
+
+function smallStepper(id, label, value, min, max, step, rfield, unit) {
+  return `
+    <div class="mini mini-wide">
+      <label for="${id}">${label}</label>
+      <div class="stepper stepper-small">
+        <button type="button" class="step" data-action="step" data-for="${id}" data-delta="-${step}" aria-label="${unit[0]}">${icon('menos')}</button>
+        <input id="${id}" type="number" inputmode="numeric" min="${min}" max="${max}" step="${step}" value="${value}" data-rfield="${rfield}">
+        <button type="button" class="step" data-action="step" data-for="${id}" data-delta="${step}" aria-label="${unit[1]}">${icon('mas')}</button>
+      </div>
+    </div>`;
+}
+
+function circuitMeta(r) {
+  return `${plural(totalSets(r), 'intervalo', 'intervalos')} · ${durationText(circuitSeconds(r))}`;
+}
+
+function viewCircuitEdit(r) {
+  return shell('rutinas', `
+    <header class="page-head page-head-back">
+      <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
+      <h1 class="page-h">${esc(r.name)}</h1>
+    </header>
+    <form class="editor" data-form="routine" data-routine="${esc(r.id)}" autocomplete="off" novalidate>
+      <div class="mini mini-wide">
+        <label for="r-name">Nombre</label>
+        <input id="r-name" type="text" value="${esc(r.name)}" data-rfield="name" maxlength="40" required>
+      </div>
+      <p class="hint">Circuito a demanda: no se asigna a días. Empiézalo con “Poco tiempo” en Hoy; corre solo de principio a fin.</p>
+      ${smallStepper('r-rounds', 'Rondas', r.rounds, 1, 10, 1, 'rounds', ['Una ronda menos', 'Una ronda más'])}
+      ${smallStepper('r-work', 'Trabajo por ejercicio, en segundos', r.work, 10, 180, 5, 'work', ['Cinco segundos menos de trabajo', 'Cinco segundos más de trabajo'])}
+      ${smallStepper('r-rest', 'Descanso después de cada ejercicio, en segundos', r.rest, 0, 120, 5, 'rest', ['Cinco segundos menos de descanso', 'Cinco segundos más de descanso'])}
+      <h2 class="sec-h">Ejercicios <span class="sec-count">${r.exercises.length}</span></h2>
+      ${r.exercises.length ? `<ol class="ex-list">${r.exercises.map((ex, i) => circuitExEditor(ex, i, r.exercises.length)).join('')}</ol>`
+        : '<p class="empty-inline">Sin ejercicios. Agrega el primero.</p>'}
+      <button type="button" class="btn btn-line" data-action="ex-add">${icon('mas')} Agregar ejercicio</button>
+      <p class="plan-meta" data-estimate>${circuitMeta(r)}</p>
+      <p class="saved-note" data-saved aria-live="polite">Los cambios se guardan solos.</p>
+    </form>`);
+}
+
 function viewRoutineEdit(id) {
   const r = routineById(id);
   if (!r) return null;
+  if (isCircuit(r)) return viewCircuitEdit(r);
   return shell('rutinas', `
     <header class="page-head page-head-back">
       <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
@@ -774,7 +1035,7 @@ function rerenderEditor() {
 function markSaved() {
   const r = editingRoutine();
   const est = app.querySelector('[data-estimate]');
-  if (r && est) est.textContent = `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
+  if (r && est) est.textContent = isCircuit(r) ? circuitMeta(r) : `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
   const note = app.querySelector('[data-saved]');
   if (note) note.textContent = 'Cambios guardados.';
 }
@@ -909,6 +1170,11 @@ function confirmSheet(title, text, label, fn) {
 }
 
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+// Al cerrar la hoja de salida sin terminar (botón, velo o Escape), el circuito retoma.
+sheet.addEventListener('close', () => {
+  if (autoPaused && active?.kind === 'circuit') resumeCircuit();
+  autoPaused = false;
+});
 
 // ---------------------------------------------------------------------------
 // Router
@@ -953,6 +1219,8 @@ document.addEventListener('click', (e) => {
       startSession(t.dataset.routine);
       break;
     case 'finish-set': finishSet(); break;
+    case 'pause-circuit': pauseCircuit(); break;
+    case 'resume-circuit': resumeCircuit(); break;
     case 'start-timed': startTimed(); break;
     case 'stop-timed': endTimed(true); break;
     case 'skip-rest': endRest(); break;
@@ -1049,7 +1317,7 @@ document.addEventListener('click', (e) => {
       let id = slugify(name);
       const ids = new Set(r.exercises.map((x) => x.id));
       while (ids.has(id)) id = `${slugify(name)}-${Math.random().toString(36).slice(2, 6)}`;
-      r.exercises.push({ id, name, sets: 3, mode: 'reps', reps: 10, weighted: false });
+      r.exercises.push(isCircuit(r) ? { id, name } : { id, name, sets: 3, mode: 'reps', reps: 10, weighted: false });
       persist();
       rerenderEditor();
       const inputs = app.querySelectorAll('.ex-edit-name');
@@ -1085,7 +1353,7 @@ document.addEventListener('click', (e) => {
       }
       break;
     case 'restore-routines':
-      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A y B vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
+      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B y Express vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
         db.routines = defaultRoutines();
         persist();
         toast('Rutinas restauradas.');
@@ -1111,10 +1379,13 @@ document.addEventListener('change', (e) => {
     r.name = v;
     const h = app.querySelector('.page-h');
     if (h) h.textContent = v;
-  } else if (el.dataset.rfield === 'rest') {
+  } else if (['rest', 'rounds', 'work'].includes(el.dataset.rfield)) {
+    const f = el.dataset.rfield;
+    const limits = isCircuit(r) ? { rest: [0, 120], rounds: [1, 10], work: [10, 180] }[f] : f === 'rest' ? [15, 180] : null;
+    if (!limits) return;
     const n = Math.round(Number(el.value));
-    r.rest = Number.isFinite(n) && el.value !== '' ? clamp(n, 15, 180) : r.rest;
-    el.value = r.rest;
+    r[f] = Number.isFinite(n) && el.value !== '' ? clamp(n, ...limits) : r[f];
+    el.value = r[f];
   } else if (el.dataset.field) {
     const needsRerender = applyExerciseField(r, Number(el.dataset.ex), el.dataset.field, el);
     persist();
