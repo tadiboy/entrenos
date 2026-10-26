@@ -427,7 +427,7 @@ function viewRest() {
     </main>`;
 }
 
-// ---- Circuito (Rutina Express): corre solo, 40/20, ronda tras ronda --------
+// ---- Circuito (Rutina Express): corre solo, 35/15, ronda tras ronda --------
 
 function circuitLeftMs() {
   return active.paused ? active.pausedLeft : Math.max(0, active.phaseEnd - Date.now());
