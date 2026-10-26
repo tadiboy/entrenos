@@ -7,7 +7,8 @@ const ACTIVE_KEY = 'entrenos.activa.v1';
 // Copia intacta de los datos tal como estaban antes de migrar, por si algo sale mal.
 const PRE_MIGRATION_KEY = 'entrenos.respaldo-antes-de-migrar';
 // 1: rutinas de fuerza. 2: agrega rutinas en circuito (Rutina Express).
-export const SCHEMA = 2;
+// 3: la Express por defecto pasa de 40/20 a 35/15.
+export const SCHEMA = 3;
 export const WEEKLY_GOAL = 3;
 
 function blank() {
@@ -56,14 +57,25 @@ const int = (v, lo, hi, fallback) => {
   return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback;
 };
 
+/** La Express tal como venía en el schema 2 (40/20), para reconocer si no se editó. */
+function isUneditedExpressV2(r) {
+  const d = defaultExpress();
+  return r.name === d.name && r.rounds === 2 && r.work === 40 && r.rest === 20
+    && Array.isArray(r.exercises) && r.exercises.length === d.exercises.length
+    && r.exercises.every((ex, i) => ex && Object.keys(ex).length === 2
+      && ex.id === d.exercises[i].id && ex.name === d.exercises[i].name);
+}
+
 /**
  * Migra y sanea las rutinas. Las del usuario se quedan como están; si no hay ningún
- * circuito (datos de la v1), se agrega la Rutina Express al final.
+ * circuito (datos de la v1), se agrega la Rutina Express al final. Desde un schema
+ * anterior al 3, la Express sin editar (40/20) pasa a los tiempos nuevos.
  */
-function migrateRoutines(routines) {
+function migrateRoutines(routines, fromSchema) {
   const out = routines.map((r) => {
     if (!isCircuit(r)) return r;
     const d = defaultExpress();
+    if (fromSchema < 3 && isUneditedExpressV2(r)) r = { ...r, work: d.work, rest: d.rest };
     return {
       ...r,
       days: [], // a demanda: nunca se asigna a días
@@ -84,9 +96,10 @@ function migrateRoutines(routines) {
 function normalize(data) {
   const base = blank();
   if (!data || typeof data !== 'object') return base;
+  const fromSchema = Number(data.schema) || 1;
   return {
     schema: SCHEMA,
-    routines: Array.isArray(data.routines) && data.routines.length ? migrateRoutines(data.routines) : base.routines,
+    routines: Array.isArray(data.routines) && data.routines.length ? migrateRoutines(data.routines, fromSchema) : base.routines,
     sessions: Array.isArray(data.sessions) ? data.sessions : [],
     last: data.last && typeof data.last === 'object' ? data.last : {},
     settings: { ...base.settings, ...(data.settings || {}) },
