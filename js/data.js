@@ -43,6 +43,7 @@ export function defaultRoutines() {
       ],
     },
     defaultExpress(),
+    defaultDespertar(),
   ];
 }
 
@@ -70,7 +71,37 @@ export function defaultExpress() {
   };
 }
 
+/**
+ * Despertar: circuito de movilidad sin equipo, a demanda (sin días).
+ * 1 ronda de 30 s por ejercicio con 10 s de transición: 4 min 30 s.
+ * `mobility` la saca de la meta semanal y de la racha, que son de fuerza.
+ */
+export const DESPERTAR_ID = 'despertar';
+export function defaultDespertar() {
+  return {
+    id: DESPERTAR_ID,
+    kind: 'circuit',
+    mobility: true,
+    name: 'Despertar',
+    days: [],
+    rounds: 1,
+    work: 30,
+    rest: 10,
+    exercises: [
+      { id: 'd-ondas', name: 'Ondas corporales', note: 'Dobla la cadera con los brazos colgando y sube arqueándote un poco con los brazos arriba, en forma de ola.' },
+      { id: 'd-saltitos', name: 'Saltitos suaves', note: 'En el lugar, con los brazos sueltos y los pies apenas despegándose del piso.' },
+      { id: 'd-cuello', name: 'Toquecitos en el cuello', note: 'Cabeza un poco hacia arriba, golpecitos suaves con las yemas al frente y a los lados.' },
+      { id: 'd-giros', name: 'Giros de tronco', note: 'Sueltos, dejando que los brazos golpeen suave el torso.' },
+      { id: 'd-brazos', name: 'Balanceo de brazos', note: 'Alternado, uno adelante y arriba y el otro atrás.' },
+      { id: 'd-axila', name: 'Toquecitos en la axila', note: 'Con el brazo contrario arriba, 15 s de cada lado.' },
+      { id: 'd-marcha', name: 'Marcha en el sitio', note: 'Subiendo rodillas y con brazo contrario.' },
+    ],
+  };
+}
+
 export const isCircuit = (r) => r?.kind === 'circuit';
+/** Circuito de movilidad (Despertar): no cuenta para la meta ni la racha. */
+export const isMobility = (r) => isCircuit(r) && r.mobility === true;
 
 /** Intervalos de trabajo de un circuito (rondas × ejercicios). */
 export function circuitIntervals(r) {

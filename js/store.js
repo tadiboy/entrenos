@@ -1,5 +1,5 @@
 // Persistencia local (localStorage), estadísticas semanales y respaldo JSON.
-import { defaultRoutines, defaultExpress, isCircuit } from './data.js';
+import { defaultRoutines, defaultExpress, defaultDespertar, isCircuit, isMobility } from './data.js';
 
 // La clave conserva su nombre de la v1 para no mover datos; la versión real va en `schema`.
 const KEY = 'entrenos.v1';
@@ -7,8 +7,8 @@ const ACTIVE_KEY = 'entrenos.activa.v1';
 // Copia intacta de los datos tal como estaban antes de migrar, por si algo sale mal.
 const PRE_MIGRATION_KEY = 'entrenos.respaldo-antes-de-migrar';
 // 1: rutinas de fuerza. 2: agrega rutinas en circuito (Rutina Express).
-// 3: la Express por defecto pasa de 40/20 a 35/15.
-export const SCHEMA = 3;
+// 3: la Express por defecto pasa de 40/20 a 35/15. 4: agrega Despertar (movilidad).
+export const SCHEMA = 4;
 export const WEEKLY_GOAL = 3;
 
 function blank() {
@@ -34,9 +34,15 @@ export function load() {
     return db;
   }
   // Datos de una versión anterior: se guarda una copia tal cual y se escribe ya migrado.
-  if (raw && JSON.parse(raw)?.schema !== SCHEMA) {
+  // La primera copia nunca se sobrescribe; si ya había una de otra migración, la de esta
+  // versión va aparte (p. ej. `entrenos.respaldo-antes-de-migrar.schema-3`).
+  const fromSchema = raw ? JSON.parse(raw)?.schema : SCHEMA;
+  if (raw && fromSchema !== SCHEMA) {
     try {
-      if (!localStorage.getItem(PRE_MIGRATION_KEY)) localStorage.setItem(PRE_MIGRATION_KEY, raw);
+      const prev = localStorage.getItem(PRE_MIGRATION_KEY);
+      const extra = `${PRE_MIGRATION_KEY}.schema-${Number(fromSchema) || 1}`;
+      if (!prev) localStorage.setItem(PRE_MIGRATION_KEY, raw);
+      else if (prev !== raw && !localStorage.getItem(extra)) localStorage.setItem(extra, raw);
     } catch { /* sin espacio: la migración sigue solo en memoria */ }
     save();
   }
@@ -68,13 +74,15 @@ function isUneditedExpressV2(r) {
 
 /**
  * Migra y sanea las rutinas. Las del usuario se quedan como están; si no hay ningún
- * circuito (datos de la v1), se agrega la Rutina Express al final. Desde un schema
- * anterior al 3, la Express sin editar (40/20) pasa a los tiempos nuevos.
+ * circuito de fuerza (datos de la v1), se agrega la Rutina Express al final. Desde un
+ * schema anterior al 3, la Express sin editar (40/20) pasa a los tiempos nuevos. Desde
+ * uno anterior al 4, se agrega Despertar al final (solo una vez: si después la borras,
+ * no vuelve).
  */
 function migrateRoutines(routines, fromSchema) {
   const out = routines.map((r) => {
     if (!isCircuit(r)) return r;
-    const d = defaultExpress();
+    const d = isMobility(r) ? defaultDespertar() : defaultExpress();
     if (fromSchema < 3 && isUneditedExpressV2(r)) r = { ...r, work: d.work, rest: d.rest };
     return {
       ...r,
@@ -84,12 +92,13 @@ function migrateRoutines(routines, fromSchema) {
       rest: int(r.rest, 0, 120, d.rest),
     };
   });
-  if (!out.some(isCircuit)) {
-    const express = defaultExpress();
-    const ids = new Set(out.map((r) => r.id));
-    while (ids.has(express.id)) express.id += '-x';
-    out.push(express);
-  }
+  const addDefault = (r) => {
+    const ids = new Set(out.map((x) => x.id));
+    while (ids.has(r.id)) r.id += '-x';
+    out.push(r);
+  };
+  if (!out.some((r) => isCircuit(r) && !isMobility(r))) addDefault(defaultExpress());
+  if (fromSchema < 4 && !out.some(isMobility)) addDefault(defaultDespertar());
   return out;
 }
 
@@ -143,6 +152,10 @@ export function remember(exId, setIndex, reps, kg) {
 
 // ---- Semanas (lunes a domingo, hora local) ---------------------------------
 
+/** La meta y la racha son de fuerza: las sesiones de movilidad (Despertar) no cuentan. */
+export const countsForGoal = (s) => !s?.mobility;
+export const goalSessions = (sessions) => sessions.filter(countsForGoal);
+
 export function weekStart(date) {
   const d = new Date(date);
   d.setHours(0, 0, 0, 0);
@@ -166,23 +179,24 @@ export function sessionsInWeek(sessions, ws) {
   });
 }
 
-/** Semanas recientes (la más antigua primero) con su conteo de sesiones. */
+/** Semanas recientes (la más antigua primero) con su conteo de sesiones que cuentan. */
 export function recentWeeks(sessions, now, count = 8) {
   const out = [];
   const ws = weekStart(now);
   for (let i = count - 1; i >= 0; i--) {
     const start = new Date(ws);
     start.setDate(start.getDate() - i * 7);
-    out.push({ start, count: sessionsInWeek(sessions, start).length, current: i === 0 });
+    out.push({ start, count: sessionsInWeek(goalSessions(sessions), start).length, current: i === 0 });
   }
   return out;
 }
 
 /**
- * Racha: semanas seguidas que cumplieron la meta. La semana en curso suma si ya
+ * Racha: semanas seguidas que cumplieron la meta (solo sesiones que cuentan). La semana en curso suma si ya
  * la cumplió; si todavía no, no rompe la racha.
  */
-export function streak(sessions, now) {
+export function streak(allSessions, now) {
+  const sessions = goalSessions(allSessions);
   let n = 0;
   const ws = weekStart(now);
   if (sessionsInWeek(sessions, ws).length >= WEEKLY_GOAL) n++;

@@ -1,7 +1,7 @@
 import {
   DAY_LETTERS, DAY_NAMES, WEEK_ORDER, MODES,
   sideLabel, targetText, prescription, totalSets, estimateMinutes, slugify, defaultRoutines,
-  isCircuit, circuitIntervals, circuitSeconds, durationText,
+  isCircuit, isMobility, circuitIntervals, circuitSeconds, durationText,
 } from './data.js';
 import * as store from './store.js';
 import * as signal from './signal.js';
@@ -39,8 +39,12 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const routineById = (id) => db.routines.find((r) => r.id === id);
 // Las rutinas de fuerza siguen la rotación por días; los circuitos van a demanda.
 const strengthRoutines = () => db.routines.filter((r) => !isCircuit(r));
-const expressRoutine = () => db.routines.find(isCircuit);
+const expressRoutine = () => db.routines.find((r) => isCircuit(r) && !isMobility(r));
+const despertarRoutine = () => db.routines.find(isMobility);
 const isCircuitSession = (s) => s?.kind === 'circuit';
+const isMobilitySession = (s) => isCircuitSession(s) && s.mobility === true;
+/** En Despertar la pausa entre ejercicios es para cambiar de movimiento, no para descansar. */
+const restWord = (r) => (isMobility(r) ? 'transición' : 'descanso');
 /** "10 intervalos" en un circuito, "17 series" en fuerza. */
 const unitsText = (n, circuit) => plural(n, circuit ? 'intervalo' : 'serie', circuit ? 'intervalos' : 'series');
 
@@ -97,6 +101,7 @@ const ICON = {
   quitar: '<path d="M6 6l12 12M18 6 6 18"/>',
   atras: '<path d="M15 5l-7 7 7 7"/>',
   reloj: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V9.5M9.5 3h5M18 6.5l1.5-1.5"/>',
+  sol: '<path d="M3.5 18.5h17M7.5 18.5a4.5 4.5 0 0 1 9 0M12 6v3.5M5.5 9.5l2 2M18.5 9.5l-2 2"/>',
 };
 const icon = (name, cls = 'icon') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON[name]}</svg>`;
 
@@ -157,7 +162,9 @@ function shell(tab, inner) {
 
 function weekStrip(now) {
   const ws = store.weekStart(now);
-  const doneDays = new Set(store.sessionsInWeek(db.sessions, ws).map((s) => store.dayKey(s.start)));
+  // Solo las sesiones que cuentan para la meta marcan el día: Despertar no.
+  const counted = store.sessionsInWeek(store.goalSessions(db.sessions), ws);
+  const doneDays = new Set(counted.map((s) => store.dayKey(s.start)));
   const todayKey = store.dayKey(now);
   const cells = [];
   for (let i = 0; i < 7; i++) {
@@ -174,7 +181,7 @@ function weekStrip(now) {
         <span class="day-plan" aria-hidden="true">${esc(planned) || '·'}</span>
       </li>`);
   }
-  const count = store.sessionsInWeek(db.sessions, ws).length;
+  const count = counted.length;
   return `
     <section class="week" aria-label="Esta semana">
       <ol class="week-strip">${cells.join('')}</ol>
@@ -208,6 +215,7 @@ function viewToday() {
   const suggested = todays[0];
   const others = strengthRoutines().filter((r) => r !== suggested);
   const express = expressRoutine();
+  const despertar = despertarRoutine();
   const dateText = cap(fmtDate(now, { weekday: 'long', day: 'numeric', month: 'long' }));
 
   let resume = '';
@@ -261,9 +269,15 @@ function viewToday() {
   return shell('hoy', `
     <header class="topline">
       <p class="date">${esc(dateText)}</p>
-      ${express ? `
-      <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(express.id)}" data-testid="quick-routine"
-        aria-label="Poco tiempo: ${esc(express.name)}, ${esc(durationText(circuitSeconds(express)))}"${active ? ' disabled' : ''}>${icon('reloj')}<span>Poco tiempo</span></button>` : ''}
+      ${express || despertar ? `
+      <div class="quick-list">
+        ${despertar ? `
+        <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(despertar.id)}" data-testid="despertar-routine"
+          aria-label="${esc(despertar.name)}: movilidad, ${esc(durationText(circuitSeconds(despertar)))}"${active ? ' disabled' : ''}>${icon('sol')}<span>${esc(despertar.name)}</span></button>` : ''}
+        ${express ? `
+        <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(express.id)}" data-testid="quick-routine"
+          aria-label="Poco tiempo: ${esc(express.name)}, ${esc(durationText(circuitSeconds(express)))}"${active ? ' disabled' : ''}>${icon('reloj')}<span>Poco tiempo</span></button>` : ''}
+      </div>` : ''}
     </header>
     ${weekStrip(now)}
     ${resume}
@@ -427,7 +441,7 @@ function viewRest() {
     </main>`;
 }
 
-// ---- Circuito (Rutina Express): corre solo, 35/15, ronda tras ronda --------
+// ---- Circuito (Rutina Express y Despertar): corre solo, ronda tras ronda ----
 
 function circuitLeftMs() {
   return active.paused ? active.pausedLeft : Math.max(0, active.phaseEnd - Date.now());
@@ -442,7 +456,7 @@ function circuitAfterWork() {
     return { what: 'Último ejercicio', detail: 'Al sonar, terminaste' };
   }
   const next = lastOfRound ? r.exercises[0] : r.exercises[active.ex + 1];
-  const pre = r.rest ? `Tras ${r.rest} s de descanso` : 'Sin descanso';
+  const pre = r.rest ? `Tras ${r.rest} s de ${restWord(r)}` : `Sin ${restWord(r)}`;
   return {
     what: `Sigue: ${next.name}`,
     detail: lastOfRound ? `${pre} · ronda ${active.round + 2}` : pre,
@@ -458,7 +472,8 @@ function viewCircuit() {
   const pauseBtn = active.paused
     ? '<button class="btn plate" data-action="resume-circuit" data-testid="resume-circuit">Seguir</button>'
     : '<button class="btn plate" data-action="pause-circuit" data-testid="pause-circuit">Pausa</button>';
-  const state = active.paused ? 'En pausa' : rest ? 'Respira, ya viene' : 'Dale hasta que suene';
+  const state = active.paused ? 'En pausa' : rest ? (isMobility(r) ? 'Cambia de movimiento' : 'Respira, ya viene') : 'Dale hasta que suene';
+  const note = ex.note ? `<p class="ex-note" data-testid="circuit-note">${esc(ex.note)}</p>` : '';
 
   if (rest) {
     const firstOfRound = active.ex === 0;
@@ -468,15 +483,16 @@ function viewCircuit() {
       <div class="rise" aria-hidden="true"><div class="rise-fill" data-rise style="transform: scaleY(${risen})"></div></div>
       ${sessionTop()}
       <main class="session session-rest session-circuit" data-testid="session" data-phase="rest" data-paused="${!!active.paused}">
-        <h1 class="ex-name" data-testid="circuit-phase">Descanso</h1>
+        <h1 class="ex-name" data-testid="circuit-phase">${isMobility(r) ? 'Transición' : 'Descanso'}</h1>
         <p class="setline-text" data-testid="circuit-round">${round}</p>
         <div class="target target-time">
-          <div class="timer" data-testid="timer" role="timer" aria-label="Descanso restante">${digits(fmtClock(left))}</div>
+          <div class="timer" data-testid="timer" role="timer" aria-label="${cap(restWord(r))} restante">${digits(fmtClock(left))}</div>
           <p class="target-unit" data-testid="circuit-state">${state}</p>
         </div>
         <p class="next" data-testid="next-up">
           <span class="next-what">Sigue: ${esc(ex.name)}</span>
-          <span class="next-detail">${firstOfRound ? `Empieza la ronda ${active.round + 1} · ` : ''}${r.work} s de trabajo</span></p>
+          <span class="next-detail">${firstOfRound ? `Empieza la ronda ${active.round + 1} · ` : ''}${r.work} s de trabajo</span>
+          ${ex.note ? `<span class="next-detail">${esc(ex.note)}</span>` : ''}</p>
         <div class="dock">${pauseBtn}</div>
       </main>`;
   }
@@ -486,6 +502,7 @@ function viewCircuit() {
     ${sessionTop()}
     <main class="session session-circuit" data-testid="session" data-phase="work" data-paused="${!!active.paused}">
       <h1 class="ex-name" data-testid="circuit-exercise">${esc(ex.name)}</h1>
+      ${note}
       <div class="setline">
         <p class="phase-tag" data-testid="circuit-phase">Trabajo</p>
         <p class="setline-text" data-testid="circuit-round">${round}</p>
@@ -544,7 +561,7 @@ function tickCircuit(now) {
     store.saveActive(active);
     if (changed === 'rest') {
       signal.toRest(db.settings);
-      announce(`Descanso de ${active.routine.rest} segundos. Sigue ${curEx().name}.`);
+      announce(`${cap(restWord(active.routine))} de ${active.routine.rest} segundos. Sigue ${curEx().name}.`);
     } else {
       signal.toWork(db.settings);
       announce(`Trabajo: ${curEx().name}, ronda ${active.round + 1}.`);
@@ -580,8 +597,9 @@ function viewDone() {
   const s = lastDone;
   if (!s) return null;
   const now = new Date();
-  const count = store.sessionsInWeek(db.sessions, store.weekStart(now)).length;
+  const count = store.sessionsInWeek(store.goalSessions(db.sessions), store.weekStart(now)).length;
   const st = store.streak(db.sessions, now);
+  const mobility = isMobilitySession(s);
   const mins = Math.max(1, Math.round(s.durationSec / 60));
   const goal = count >= store.WEEKLY_GOAL;
   return `
@@ -593,7 +611,9 @@ function viewDone() {
         <p class="streak-line"><span class="num">${count}</span> de ${store.WEEKLY_GOAL} esta semana</p>
         ${st ? `<p class="streak-line"><span class="num">${st}</span> ${st === 1 ? 'semana' : 'semanas'} de racha</p>` : ''}
       </div>
-      <p class="done-note">${goal
+      <p class="done-note" data-testid="done-note">${mobility
+        ? 'La movilidad no cuenta para la meta de fuerza de la semana.'
+        : goal
         ? 'Meta de la semana cumplida.'
         : `Te ${store.WEEKLY_GOAL - count === 1 ? 'falta 1 sesión' : `faltan ${store.WEEKLY_GOAL - count} sesiones`} para la meta de la semana.`}</p>
       <div class="dock dock-stack">
@@ -694,6 +714,7 @@ function complete(partial) {
     sets: active.log,
   };
   if (active.kind === 'circuit') record.kind = 'circuit';
+  if (isMobility(active.routine)) record.mobility = true;
   db.sessions.push(record);
   persist();
   active = null;
@@ -817,7 +838,7 @@ function viewHistory() {
             <span class="wk-label" aria-hidden="true">${esc(fmtDate(w.start, { day: 'numeric' }))}</span>
           </li>`).join('')}
       </ol>
-      <figcaption id="weeks-cap">Últimas 8 semanas, por lunes. Cada cuadro es una sesión; la meta son ${store.WEEKLY_GOAL}.</figcaption>
+      <figcaption id="weeks-cap">Últimas 8 semanas, por lunes. Cada cuadro es una sesión; la meta son ${store.WEEKLY_GOAL}. Despertar no cuenta.</figcaption>
     </figure>`;
 
   const sessions = list.length ? `
@@ -829,7 +850,8 @@ function viewHistory() {
           <details>
             <summary>
               <span class="h-date">${esc(cap(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })))}</span>
-              <span class="h-name">${esc(s.routineName)}${isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>' : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
+              <span class="h-name">${esc(s.routineName)}${isMobilitySession(s) ? ' <span class="h-tag h-tag-movilidad" data-testid="mobility-tag">Movilidad</span>'
+                : isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>' : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
               <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${unitsText(s.sets.length, isCircuitSession(s))}</span>
             </summary>
             <ul class="h-detail">${summarizeSets(s.sets)}</ul>
@@ -867,9 +889,9 @@ function viewRoutines() {
       ${db.routines.map((r) => `
         <li class="r-item">
           <h2 class="r-name">${esc(r.name)}</h2>
-          <p class="r-days">${isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy' : esc(daysText(r.days))}</p>
+          <p class="r-days">${isMobility(r) ? `A demanda, con “${esc(r.name)}” en Hoy · no cuenta para la meta` : isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy' : esc(daysText(r.days))}</p>
           <p class="r-meta">${isCircuit(r)
-            ? `Circuito · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(r.rounds, 'ronda', 'rondas')} · ${r.work} s trabajo / ${r.rest} s descanso · ${durationText(circuitSeconds(r))}`
+            ? `${isMobility(r) ? 'Movilidad' : 'Circuito'} · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(r.rounds, 'ronda', 'rondas')} · ${r.work} s trabajo / ${r.rest} s ${restWord(r)} · ${durationText(circuitSeconds(r))}`
             : `${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s`}</p>
           <a class="btn btn-line" href="#/rutinas/${encodeURIComponent(r.id)}" data-testid="edit-routine-${esc(r.id)}">Editar ${esc(r.name)}</a>
         </li>`).join('')}
@@ -925,7 +947,7 @@ function numField(id, label, value, min, max, step, i, field) {
     </div>`;
 }
 
-function circuitExEditor(ex, i, n) {
+function circuitExEditor(ex, i, n, withNote) {
   const id = `e${i}`;
   return `
     <li class="ex-edit ex-edit-circuit">
@@ -934,6 +956,11 @@ function circuitExEditor(ex, i, n) {
         <label class="sr-only" for="${id}-name">Nombre del ejercicio ${i + 1}</label>
         <input class="ex-edit-name" id="${id}-name" type="text" value="${esc(ex.name)}" data-ex="${i}" data-field="name" maxlength="60" required>
       </div>
+      ${withNote ? `
+      <div class="mini mini-wide">
+        <label for="${id}-note">Indicación</label>
+        <input id="${id}-note" type="text" value="${esc(ex.note ?? '')}" data-ex="${i}" data-field="note" maxlength="160">
+      </div>` : ''}
       <div class="ex-edit-actions">
         <button type="button" class="icon-btn" data-action="ex-up" data-ex="${i}" aria-label="Subir ${esc(ex.name)}"${i === 0 ? ' disabled' : ''}>${icon('arriba')}</button>
         <button type="button" class="icon-btn" data-action="ex-down" data-ex="${i}" aria-label="Bajar ${esc(ex.name)}"${i === n - 1 ? ' disabled' : ''}>${icon('abajo')}</button>
@@ -969,12 +996,14 @@ function viewCircuitEdit(r) {
         <label for="r-name">Nombre</label>
         <input id="r-name" type="text" value="${esc(r.name)}" data-rfield="name" maxlength="40" required>
       </div>
-      <p class="hint">Circuito a demanda: no se asigna a días. Empiézalo con “Poco tiempo” en Hoy; corre solo de principio a fin.</p>
+      <p class="hint">${isMobility(r)
+        ? `Movilidad a demanda: no se asigna a días ni cuenta para la meta semanal ni la racha. Empiézala con “${esc(r.name)}” en Hoy; corre sola de principio a fin.`
+        : 'Circuito a demanda: no se asigna a días. Empiézalo con “Poco tiempo” en Hoy; corre solo de principio a fin.'}</p>
       ${smallStepper('r-rounds', 'Rondas', r.rounds, 1, 10, 1, 'rounds', ['Una ronda menos', 'Una ronda más'])}
       ${smallStepper('r-work', 'Trabajo por ejercicio, en segundos', r.work, 10, 180, 5, 'work', ['Cinco segundos menos de trabajo', 'Cinco segundos más de trabajo'])}
-      ${smallStepper('r-rest', 'Descanso después de cada ejercicio, en segundos', r.rest, 0, 120, 5, 'rest', ['Cinco segundos menos de descanso', 'Cinco segundos más de descanso'])}
+      ${smallStepper('r-rest', `${cap(restWord(r))} después de cada ejercicio, en segundos`, r.rest, 0, 120, 5, 'rest', [`Cinco segundos menos de ${restWord(r)}`, `Cinco segundos más de ${restWord(r)}`])}
       <h2 class="sec-h">Ejercicios <span class="sec-count">${r.exercises.length}</span></h2>
-      ${r.exercises.length ? `<ol class="ex-list">${r.exercises.map((ex, i) => circuitExEditor(ex, i, r.exercises.length)).join('')}</ol>`
+      ${r.exercises.length ? `<ol class="ex-list">${r.exercises.map((ex, i) => circuitExEditor(ex, i, r.exercises.length, isMobility(r))).join('')}</ol>`
         : '<p class="empty-inline">Sin ejercicios. Agrega el primero.</p>'}
       <button type="button" class="btn btn-line" data-action="ex-add">${icon('mas')} Agregar ejercicio</button>
       <p class="plan-meta" data-estimate>${circuitMeta(r)}</p>
@@ -1051,6 +1080,11 @@ function applyExerciseField(r, i, field, el) {
     const row = el.closest('.ex-edit');
     row?.querySelector('[data-action="ex-up"]')?.setAttribute('aria-label', `Subir ${v}`);
     row?.querySelector('[data-action="ex-down"]')?.setAttribute('aria-label', `Bajar ${v}`);
+    return false;
+  }
+  if (field === 'note') {
+    const v = el.value.trim();
+    if (v) ex.note = v; else delete ex.note;
     return false;
   }
   if (field === 'perSide' || field === 'weighted') { ex[field] = el.checked; return false; }
@@ -1353,7 +1387,7 @@ document.addEventListener('click', (e) => {
       }
       break;
     case 'restore-routines':
-      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B y Express vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
+      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B, Express y Despertar vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
         db.routines = defaultRoutines();
         persist();
         toast('Rutinas restauradas.');

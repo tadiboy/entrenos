@@ -362,6 +362,10 @@ h1:focus { outline: none; }
 .topline .date { text-wrap: balance; }
 .editor .hint { text-wrap: pretty; }
 .btn-quick .icon { width: 24px; height: 24px; stroke-width: 2.5; }
+/* "Despertar" y "Poco tiempo" van juntos; si no caben junto a la fecha, bajan a su renglón. */
+.topline { flex-wrap: wrap; }
+.quick-list { flex: 1 1 auto; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s1); }
+.quick-list .btn-quick { flex: 1 1 auto; justify-content: center; }
 
 .week { display: grid; gap: var(--s1); }
 .week-strip {
@@ -513,6 +517,9 @@ h1:focus { outline: none; }
   text-underline-offset: 6px;
 }
 .session-circuit .target-time { padding: var(--s1) 0 0; }
+/* Indicación del ejercicio (Despertar): de cerca, en la sans, con el texto secundario del muro. */
+.ex-note { font-size: var(--t-md); font-weight: 600; line-height: 1.35; color: var(--fg2); max-width: 40ch; text-wrap: pretty; }
+.next .next-detail + .next-detail { max-width: 40ch; text-wrap: pretty; }
 .session-circuit .target-unit { font-weight: 700; }
 /* En pantallas bajas (iPhone SE) el reloj cede alto para que "Sigue" no quede bajo el dock. */
 .session-circuit .timer { font-size: min(46vw, 15rem, 25vh); }
@@ -743,6 +750,7 @@ h1:focus { outline: none; }
 .h-meta { grid-area: meta; font-size: var(--t-sm); font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .h-tag { font-size: var(--t-xs); font-weight: 800; padding: 2px 6px; border-radius: 2px; background: var(--azul-hondo); color: var(--azul-texto); vertical-align: middle; }
 .h-tag-express { background: var(--amarillo); color: var(--tinta); }
+.h-tag-movilidad { background: var(--azul-texto); color: var(--azul-hondo); }
 .h-detail { display: grid; gap: 6px; padding-bottom: var(--s2); }
 .h-detail li { display: flex; justify-content: space-between; gap: var(--s2); font-size: var(--t-sm); }
 .h-ex { font-weight: 600; }
