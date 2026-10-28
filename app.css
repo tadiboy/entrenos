@@ -545,6 +545,21 @@ h1:focus { outline: none; }
   text-transform: uppercase;
   margin-top: var(--s1);
 }
+/* AMRAP de la Rutina C: el reloj de 15 min manda ("15:00" tiene una cifra más que el circuito)
+   y la meta del ejercicio va en rótulo debajo. */
+.session-amrap .timer { font-size: min(36vw, 11rem, 20vh); }
+.amrap-target {
+  font-family: var(--display);
+  font-weight: 900;
+  font-size: clamp(1.625rem, 8vw, 2.25rem);
+  line-height: 1;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-height: 620px) and (orientation: portrait) {
+  .session-amrap .timer { font-size: min(36vw, 17vh); }
+  .session-amrap .next { display: none; }
+}
 .pips { display: flex; gap: 6px; }
 .pips li { width: 28px; height: 14px; border: 2px solid var(--fg); border-radius: 2px; }
 .pips li.is-done { background: var(--fg); }
@@ -749,7 +764,7 @@ h1:focus { outline: none; }
 .h-name { grid-area: name; font-size: var(--t-lg); font-weight: 800; }
 .h-meta { grid-area: meta; font-size: var(--t-sm); font-weight: 700; text-align: right; font-variant-numeric: tabular-nums; }
 .h-tag { font-size: var(--t-xs); font-weight: 800; padding: 2px 6px; border-radius: 2px; background: var(--azul-hondo); color: var(--azul-texto); vertical-align: middle; }
-.h-tag-express { background: var(--amarillo); color: var(--tinta); }
+.h-tag-express, .h-tag-amrap { background: var(--amarillo); color: var(--tinta); }
 .h-tag-movilidad { background: var(--azul-texto); color: var(--azul-hondo); }
 .h-detail { display: grid; gap: 6px; padding-bottom: var(--s2); }
 .h-detail li { display: flex; justify-content: space-between; gap: var(--s2); font-size: var(--t-sm); }

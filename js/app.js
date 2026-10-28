@@ -2,6 +2,7 @@ import {
   DAY_LETTERS, DAY_NAMES, WEEK_ORDER, MODES,
   sideLabel, targetText, prescription, totalSets, estimateMinutes, slugify, defaultRoutines,
   isCircuit, isMobility, circuitIntervals, circuitSeconds, durationText,
+  isRounds, roundTarget,
 } from './data.js';
 import * as store from './store.js';
 import * as signal from './signal.js';
@@ -24,6 +25,13 @@ if (active?.kind === 'circuit' && !active.paused) {
   active.pausedLeft = left > 0 ? left : active.phaseTotal;
   store.saveActive(active);
 }
+// Igual con el AMRAP de la Rutina C: su reloj de 15 min vuelve detenido donde iba.
+if (isAmrapRunning(active) && !active.paused) {
+  const left = active.amrapEnd - Date.now();
+  active.paused = true;
+  active.pausedLeft = left > 0 ? left : 0;
+  store.saveActive(active);
+}
 let lastDone = null;
 let ticker = null;
 let currentWall = null;
@@ -43,6 +51,15 @@ const expressRoutine = () => db.routines.find((r) => isCircuit(r) && !isMobility
 const despertarRoutine = () => db.routines.find(isMobility);
 const isCircuitSession = (s) => s?.kind === 'circuit';
 const isMobilitySession = (s) => isCircuitSession(s) && s.mobility === true;
+const isRoundsSession = (s) => s?.kind === 'rounds';
+/** AMRAP de la Rutina C con su reloj ya corriendo (después del calentamiento). */
+function isAmrapRunning(a) {
+  return a?.kind === 'rounds' && a.amrap && a.amrapEnd != null && a.phase === 'work';
+}
+/** "4 rondas", "3 rondas + 2": rondas completas y ejercicios sueltos de la ronda sin terminar. */
+function roundsText(rounds, extra) {
+  return `${plural(rounds, 'ronda', 'rondas')}${extra ? ` + ${extra}` : ''}`;
+}
 /** En Despertar la pausa entre ejercicios es para cambiar de movimiento, no para descansar. */
 const restWord = (r) => (isMobility(r) ? 'transición' : 'descanso');
 /** "10 intervalos" en un circuito, "17 series" en fuerza. */
@@ -172,7 +189,7 @@ function weekStrip(now) {
     d.setDate(d.getDate() + i);
     const dow = d.getDay();
     const key = store.dayKey(d);
-    const planned = db.routines.filter((r) => r.days.includes(dow)).map((r) => r.id).join('');
+    const planned = db.routines.filter((r) => r.days.includes(dow)).map((r) => r.mark || r.id).join('');
     const done = doneDays.has(key);
     const label = `${cap(DAY_NAMES[dow])}${planned ? `, toca ${planned}` : ''}${done ? ', entrenaste' : ''}${key === todayKey ? ', hoy' : ''}`;
     cells.push(`
@@ -190,6 +207,14 @@ function weekStrip(now) {
 }
 
 function planList(r) {
+  if (isRounds(r)) {
+    return `
+    <ol class="plan">
+      ${r.exercises.map((ex) => `
+        <li><span class="plan-name">${esc(ex.name)}</span><span class="plan-rx">${esc(roundTarget(ex))}</span></li>`).join('')}
+    </ol>
+    <p class="plan-meta">${plural(r.rounds, 'ronda', 'rondas')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s entre rondas</p>`;
+  }
   return `
     <ol class="plan">
       ${r.exercises.map((ex) => `
@@ -223,7 +248,9 @@ function viewToday() {
     const done = active.log.length;
     resume = `
       <section class="resume" aria-label="Sesión sin terminar">
-        <p><strong>${esc(active.routine.name)} sin terminar.</strong> Llevas ${done} de ${unitsText(totalSets(active.routine), isCircuit(active.routine))}.</p>
+        <p><strong>${esc(active.routine.name)} sin terminar.</strong> ${active.amrap
+          ? `Llevas ${roundsText(Math.floor(done / active.routine.exercises.length), done % active.routine.exercises.length)} del AMRAP.`
+          : `Llevas ${done} de ${unitsText(totalSets(active.routine), isCircuit(active.routine))}.`}</p>
         <a class="btn btn-ink" href="#/sesion" data-testid="resume-session">Continuar sesión</a>
       </section>`;
   }
@@ -260,7 +287,7 @@ function viewToday() {
           ${strengthRoutines().map((r) => `
             <button class="choose" data-action="start" data-routine="${esc(r.id)}" data-testid="choose-routine"${active ? ' disabled' : ''}>
               <span class="choose-name">${esc(r.name)}</span>
-              <span class="choose-meta">${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ≈ ${estimateMinutes(r)} min</span>
+              <span class="choose-meta">${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ≈ ${estimateMinutes(r)} min${isRounds(r) ? ` · o ${r.amrapMinutes} min` : ''}</span>
             </button>`).join('')}
         </div>
       </section>`;
@@ -288,7 +315,20 @@ function viewToday() {
 // Sesión
 // ---------------------------------------------------------------------------
 
-function startSession(routineId) {
+/** La Rutina C se puede hacer completa o en AMRAP corto: se elige en la hoja antes de empezar. */
+function openRoundsChoice(r) {
+  openSheet(`
+    <h2 id="sheet-title">${esc(r.name)}</h2>
+    <p>${esc(r.exercises.map((ex) => ex.name).join(', '))}. Calentamiento opcional de ${Math.round((r.warmup || 0) / 60)} min.</p>
+    <div class="sheet-actions">
+      <button class="btn plate" data-action="start-rounds" data-mode="full" data-routine="${esc(r.id)}" data-testid="core-full">Completa · ≈ ${estimateMinutes(r)} min</button>
+      <button class="btn btn-line" data-action="start-rounds" data-mode="amrap" data-routine="${esc(r.id)}" data-testid="core-amrap">${r.amrapMinutes} min · AMRAP</button>
+      <p class="hint">Completa: ${plural(r.rounds, 'ronda', 'rondas')} con ${r.rest} s de descanso entre rondas. ${r.amrapMinutes} min: el mismo circuito, cuantas rondas salgan.</p>
+      <button class="btn btn-line" data-action="close-sheet">Cancelar</button>
+    </div>`);
+}
+
+function startSession(routineId, { amrap = false } = {}) {
   const r = routineById(routineId);
   if (!r || !r.exercises.length) { toast('Esta rutina no tiene ejercicios.'); return; }
   signal.unlockAudio();
@@ -307,15 +347,26 @@ function startSession(routineId) {
     active.phaseTotal = r.work * 1000;
     active.phaseEnd = Date.now() + active.phaseTotal;
   }
+  if (isRounds(r)) {
+    // Rutina C: empieza en el calentamiento (opcional); el AMRAP arranca su reloj al terminarlo.
+    Object.assign(active, { kind: 'rounds', amrap: !!amrap, phase: r.warmup > 0 ? 'warmup' : 'work', paused: false, pausedLeft: null });
+    if (!r.warmup && amrap) startAmrapClock();
+  }
   store.saveActive(active);
   if (location.hash === '#/sesion') route();
   else location.hash = '#/sesion';
 }
 
 const curEx = () => active.routine.exercises[active.ex];
-const isLastSet = () => active.ex === active.routine.exercises.length - 1 && active.set === curEx().sets - 1;
+const isRoundsActive = () => active?.kind === 'rounds';
+const lastOfRound = () => active.ex === active.routine.exercises.length - 1;
+const isLastSet = () => (isRoundsActive()
+  ? !active.amrap && lastOfRound() && active.set === active.routine.rounds - 1
+  : active.ex === active.routine.exercises.length - 1 && active.set === curEx().sets - 1);
 
 function nextPointer() {
+  // Rutina C: los ejercicios van seguidos dentro de la ronda; `set` es la ronda.
+  if (isRoundsActive()) return lastOfRound() ? { ex: 0, set: active.set + 1 } : { ex: active.ex + 1, set: active.set };
   const ex = curEx();
   if (active.set < ex.sets - 1) return { ex: active.ex, set: active.set + 1 };
   return { ex: active.ex + 1, set: 0 };
@@ -326,21 +377,22 @@ function defaultReps(ex, setIndex) {
   const prev = last[setIndex] ?? last.find((n) => n != null);
   if (ex.mode === 'reps') return ex.reps;
   if (ex.mode === 'range') return prev != null ? clamp(prev, 1, 999) : ex.reps;
-  return prev != null ? prev : 10;
+  return prev != null ? prev : ex.goal ?? 10;
 }
 
 function sessionTop() {
   const total = active.routine.exercises.length;
   return `
     <header class="sbar">
-      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">${active.kind === 'circuit' ? 'Terminar' : 'Salir'}</button>
-      <p class="sbar-pos">Ejercicio ${Math.min(active.ex + 1, total)} de ${total}</p>
+      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">${active.kind === 'circuit' || isAmrapRunning(active) ? 'Terminar' : 'Salir'}</button>
+      <p class="sbar-pos">${active.phase === 'warmup' || active.phase === 'warmup-run' ? 'Calentamiento' : `Ejercicio ${Math.min(active.ex + 1, total)} de ${total}`}</p>
       <p class="sbar-clock" aria-label="Tiempo de sesión"><span data-elapsed>${fmtClock((Date.now() - new Date(active.startedAt)) / 1000)}</span></p>
     </header>`;
 }
 
 function pips(ex, current) {
-  return `<ol class="pips" aria-hidden="true">${Array.from({ length: ex.sets }, (_, i) =>
+  const n = isRoundsActive() ? active.routine.rounds : ex.sets;
+  return `<ol class="pips" aria-hidden="true">${Array.from({ length: n }, (_, i) =>
     `<li class="${i < current ? 'is-done' : i === current ? 'is-now' : ''}"></li>`).join('')}</ol>`;
 }
 
@@ -350,6 +402,7 @@ function digits(text) {
 
 function viewWork() {
   const ex = curEx();
+  const rounds = isRoundsActive();
   const side = sideLabel(ex);
   const last = store.lastFor(ex.id);
   const timed = ex.mode === 'time';
@@ -375,7 +428,7 @@ function viewWork() {
     body = `
       <div class="target">
         <p class="target-num${ex.mode === 'max' ? ' is-word' : ''}" data-testid="target">${esc(tgt)}</p>
-        <p class="target-unit">${ex.mode === 'max' ? 'repeticiones, las que salgan' : 'repeticiones'}${side ? ` <strong>${esc(side)}</strong>` : ''}</p>
+        <p class="target-unit">${ex.mode === 'max' ? (ex.goal ? `repeticiones, meta ${ex.goal}` : 'repeticiones, las que salgan') : 'repeticiones'}${side ? ` <strong>${esc(side)}</strong>` : ''}</p>
       </div>
       <form class="log" data-form="set" autocomplete="off">
         <div class="field">
@@ -397,7 +450,7 @@ function viewWork() {
         </div>` : ''}
       </form>
       <div class="dock">
-        <button class="btn plate" data-action="finish-set" data-testid="finish-set">${isLastSet() ? 'Terminé la última' : 'Terminé la serie'}</button>
+        <button class="btn plate" data-action="finish-set" data-testid="finish-set">${isLastSet() ? 'Terminé la última' : !rounds ? 'Terminé la serie' : lastOfRound() ? 'Terminé la ronda' : 'Terminé, sigue'}</button>
       </div>`;
   }
 
@@ -405,8 +458,9 @@ function viewWork() {
     ${sessionTop()}
     <main class="session" data-testid="session" data-phase="${active.phase}">
       <h1 class="ex-name">${esc(ex.name)}</h1>
+      ${rounds && ex.note ? `<p class="ex-note">${esc(ex.note)}</p>` : ''}
       <div class="setline">
-        <p class="setline-text" data-testid="set-label">Serie ${active.set + 1} de ${ex.sets}</p>
+        <p class="setline-text" data-testid="set-label">${rounds ? `Ronda ${active.set + 1} de ${active.routine.rounds}` : `Serie ${active.set + 1} de ${ex.sets}`}</p>
         ${pips(ex, active.set)}
       </div>
       ${body}
@@ -433,10 +487,122 @@ function viewRest() {
       </div>
       <p class="next" data-testid="next-up">
         <span class="next-what">Sigue: ${esc(ex.name)}</span>
-        <span class="next-detail">${firstOfEx ? esc(prescription(ex)) : `Serie ${active.set + 1} de ${ex.sets} · ${esc(targetWithUnit(ex))}`}</span></p>
+        <span class="next-detail">${isRoundsActive()
+          ? `Empieza la ronda ${active.set + 1} de ${active.routine.rounds} · ${esc(roundTarget(ex))}`
+          : firstOfEx ? esc(prescription(ex)) : `Serie ${active.set + 1} de ${ex.sets} · ${esc(targetWithUnit(ex))}`}</span></p>
       <div class="dock dock-pair">
         <button class="btn btn-line" data-action="extend-rest" data-testid="extend-rest">+15 s</button>
         <button class="btn plate" data-action="skip-rest" data-testid="skip-rest">Saltar descanso</button>
+      </div>
+    </main>`;
+}
+
+// ---- Rutina C · Core 4: calentamiento opcional, rondas y AMRAP --------------
+
+function viewWarmup() {
+  const r = active.routine;
+  const running = active.phase === 'warmup-run';
+  const left = running ? Math.ceil(Math.max(0, active.warmupEnd - Date.now()) / 1000) : r.warmup;
+  const min = Math.round(r.warmup / 60);
+  const first = r.exercises[0];
+  return `
+    ${sessionTop()}
+    <main class="session session-circuit" data-testid="session" data-phase="${active.phase}">
+      <h1 class="ex-name">Calentamiento</h1>
+      <p class="ex-note">Opcional. Ondas corporales, giros de tronco, sentadillas sin peso y unos swings ligeros.</p>
+      <div class="target target-time">
+        <div class="timer" data-testid="timer" role="timer" aria-label="Calentamiento restante">${digits(fmtClock(left))}</div>
+        <p class="target-unit" data-testid="circuit-state">${running ? 'Muévete suave' : `${min} min libres, si quieres`}</p>
+      </div>
+      <p class="next" data-testid="next-up">
+        <span class="next-what">Sigue: ${esc(first.name)}</span>
+        <span class="next-detail">${active.amrap ? `AMRAP de ${r.amrapMinutes} min: cuantas rondas salgan` : `Ronda 1 de ${r.rounds} · ${esc(roundTarget(first))}`}</span></p>
+      <div class="dock${running ? '' : ' dock-pair'}">
+        ${running
+          ? '<button class="btn plate" data-action="skip-warmup" data-testid="skip-warmup">Ya estoy listo</button>'
+          : `<button class="btn btn-line" data-action="skip-warmup" data-testid="skip-warmup">Saltar</button>
+        <button class="btn plate" data-action="start-warmup" data-testid="start-warmup">Calentar ${min} min</button>`}
+      </div>
+    </main>`;
+}
+
+function startWarmup() {
+  signal.unlockAudio();
+  active.phase = 'warmup-run';
+  active.warmupTotal = active.routine.warmup * 1000;
+  active.warmupEnd = Date.now() + active.warmupTotal;
+  active.beep = null;
+  store.saveActive(active);
+  renderSession(false);
+  announce(`Calentamiento de ${Math.round(active.routine.warmup / 60)} minutos.`);
+}
+
+function startAmrapClock() {
+  active.amrapTotal = active.routine.amrapMinutes * 60_000;
+  active.amrapEnd = Date.now() + active.amrapTotal;
+  active.paused = false;
+  active.pausedLeft = null;
+  active.beep = null;
+}
+
+/** Termina (o salta) el calentamiento y empieza la ronda 1; en AMRAP arranca el reloj. */
+function endWarmup() {
+  signal.unlockAudio();
+  active.phase = 'work';
+  active.ex = 0;
+  active.set = 0;
+  active.warmupEnd = null;
+  if (active.amrap) startAmrapClock();
+  store.saveActive(active);
+  renderSession();
+  announce(active.amrap
+    ? `AMRAP de ${active.routine.amrapMinutes} minutos. ${curEx().name}.`
+    : `Ronda 1: ${curEx().name}.`);
+}
+
+function amrapLeftMs() {
+  return active.paused ? active.pausedLeft : Math.max(0, active.amrapEnd - Date.now());
+}
+
+function viewAmrap() {
+  const r = active.routine;
+  const ex = curEx();
+  const left = Math.ceil(amrapLeftMs() / 1000);
+  const done = active.set; // rondas completas
+  const next = lastOfRound() ? r.exercises[0] : r.exercises[active.ex + 1];
+  const pauseBtn = active.paused
+    ? '<button class="btn btn-line" data-action="resume-circuit" data-testid="resume-circuit">Seguir</button>'
+    : '<button class="btn btn-line" data-action="pause-circuit" data-testid="pause-circuit">Pausa</button>';
+  return `
+    ${sessionTop()}
+    <main class="session session-circuit session-amrap" data-testid="session" data-phase="work" data-paused="${!!active.paused}">
+      <h1 class="ex-name" data-testid="amrap-exercise">${esc(ex.name)}</h1>
+      <div class="setline">
+        <p class="phase-tag">AMRAP</p>
+        <p class="setline-text" data-testid="amrap-rounds">${plural(done, 'ronda', 'rondas')} · va la ${done + 1}</p>
+      </div>
+      <div class="target target-time">
+        <div class="timer" data-testid="timer" role="timer" aria-label="AMRAP restante">${digits(fmtClock(left))}</div>
+        <p class="target-unit" data-testid="circuit-state">${active.paused ? 'En pausa' : `de ${r.amrapMinutes} min`}</p>
+      </div>
+      <p class="amrap-target" data-testid="target">${esc(roundTarget(ex))}</p>
+      ${ex.mode === 'max' ? `
+      <form class="log" data-form="set" autocomplete="off">
+        <div class="field">
+          <label for="f-reps">Hiciste</label>
+          <div class="stepper">
+            <button type="button" class="step" data-action="step" data-for="f-reps" data-delta="-1" aria-label="Una repetición menos">${icon('menos')}</button>
+            <input id="f-reps" name="reps" type="number" inputmode="numeric" min="0" max="999" value="${esc(defaultReps(ex, active.set))}" data-testid="reps-input">
+            <button type="button" class="step" data-action="step" data-for="f-reps" data-delta="1" aria-label="Una repetición más">${icon('mas')}</button>
+          </div>
+        </div>
+      </form>` : ''}
+      <p class="next" data-testid="next-up">
+        <span class="next-what">Sigue: ${esc(next.name)}</span>
+        <span class="next-detail">${lastOfRound() ? `Empieza la ronda ${done + 2}` : esc(roundTarget(next))}</span></p>
+      <div class="dock dock-pair">
+        ${pauseBtn}
+        <button class="btn plate" data-action="finish-set" data-testid="finish-set">${lastOfRound() ? 'Ronda lista' : 'Hecho'}</button>
       </div>
     </main>`;
 }
@@ -572,25 +738,30 @@ function tickCircuit(now) {
   updateCountdown(active.phaseEnd - now, active.phaseTotal);
 }
 
+/** Pausa el circuito o el reloj del AMRAP de la Rutina C. */
 function pauseCircuit() {
-  if (!active || active.kind !== 'circuit' || active.paused) return;
+  if (!active || active.paused) return;
+  if (active.kind === 'circuit') active.pausedLeft = Math.max(0, active.phaseEnd - Date.now());
+  else if (isAmrapRunning(active)) active.pausedLeft = Math.max(0, active.amrapEnd - Date.now());
+  else return;
   active.paused = true;
-  active.pausedLeft = Math.max(0, active.phaseEnd - Date.now());
   store.saveActive(active);
   renderSession(false);
   announce('En pausa.');
 }
 
 function resumeCircuit() {
-  if (!active || active.kind !== 'circuit' || !active.paused) return;
+  if (!active || !active.paused) return;
+  if (active.kind === 'circuit') active.phaseEnd = Date.now() + active.pausedLeft;
+  else if (isAmrapRunning(active)) active.amrapEnd = Date.now() + active.pausedLeft;
+  else return;
   signal.unlockAudio();
   active.paused = false;
-  active.phaseEnd = Date.now() + active.pausedLeft;
   active.pausedLeft = null;
   active.beep = null;
   store.saveActive(active);
   renderSession(false);
-  announce('Sigue el circuito.');
+  announce(active.kind === 'circuit' ? 'Sigue el circuito.' : 'Sigue el AMRAP.');
 }
 
 function viewDone() {
@@ -600,14 +771,17 @@ function viewDone() {
   const count = store.sessionsInWeek(store.goalSessions(db.sessions), store.weekStart(now)).length;
   const st = store.streak(db.sessions, now);
   const mobility = isMobilitySession(s);
+  const rounds = isRoundsSession(s);
   const mins = Math.max(1, Math.round(s.durationSec / 60));
   const goal = count >= store.WEEKLY_GOAL;
   return `
     <main class="session session-done" data-testid="session-done">
       <h1 class="ex-name done-h">${s.partial ? 'Guardado' : 'Listo'}</h1>
-      <p class="done-sub">${esc(s.routineName)}${s.partial ? ', sesión parcial' : ''}</p>
+      <p class="done-sub">${esc(s.routineName)}${s.amrap ? `, AMRAP de ${s.amrapMinutes} min` : ''}${s.partial ? ', sesión parcial' : ''}</p>
       <div class="streak done-lines">
-        <p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${unitsText(s.sets.length, isCircuitSession(s)).replace(/^\d+ /, '')}</p>
+        ${rounds
+          ? `<p class="streak-line" data-testid="done-rounds"><span class="num">${mins}</span> min · <span class="num">${s.rounds}</span> ${s.rounds === 1 ? 'ronda' : 'rondas'}${s.roundsExtra ? ` + ${s.roundsExtra}` : ''}</p>`
+          : `<p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${unitsText(s.sets.length, isCircuitSession(s)).replace(/^\d+ /, '')}</p>`}
         <p class="streak-line"><span class="num">${count}</span> de ${store.WEEKLY_GOAL} esta semana</p>
         ${st ? `<p class="streak-line"><span class="num">${st}</span> ${st === 1 ? 'semana' : 'semanas'} de racha</p>` : ''}
       </div>
@@ -635,6 +809,8 @@ function renderSession(paint = true) {
   }
   signal.keepAwake(true);
   if (active.kind === 'circuit') mount(viewCircuit(), active.phase === 'rest' ? 'rosa' : 'amarillo', { paint });
+  else if (active.phase === 'warmup' || active.phase === 'warmup-run') mount(viewWarmup(), 'amarillo', { paint });
+  else if (active.amrap) mount(viewAmrap(), 'amarillo', { paint });
   else if (active.phase === 'rest') mount(viewRest(), 'rosa', { paint });
   else mount(viewWork(), 'amarillo', { paint });
   startTicker();
@@ -655,19 +831,37 @@ function logSet(entry) {
   persist();
   if (isLastSet()) { complete(false); return; }
   const next = nextPointer();
+  const newRound = isRoundsActive() && next.ex === 0;
   active.ex = next.ex;
   active.set = next.set;
+  // Rutina C: dentro de la ronda los ejercicios van seguidos; se descansa solo al cerrar
+  // la ronda, y en AMRAP nunca (el reloj de 15 min sigue corriendo).
+  if (isRoundsActive() && (!newRound || active.amrap || !active.routine.rest)) {
+    active.phase = 'work';
+    store.saveActive(active);
+    renderSession();
+    announce(newRound ? `Ronda ${active.set + 1}: ${curEx().name}.` : `Sigue: ${curEx().name}.`);
+    return;
+  }
   active.phase = 'rest';
   active.restTotal = active.routine.rest * 1000;
   active.restEnd = Date.now() + active.restTotal;
   active.beep = null;
   store.saveActive(active);
   renderSession();
-  announce(`Descanso de ${active.routine.rest} segundos.`);
+  announce(`Descanso de ${active.routine.rest} segundos.${isRoundsActive() ? ` Sigue la ronda ${active.set + 1}.` : ''}`);
 }
 
 function finishSet() {
   const ex = curEx();
+  if (active.amrap) {
+    // AMRAP: solo las lagartijas (al máximo) se anotan; lo demás se registra con su meta.
+    signal.unlockAudio();
+    const entry = ex.mode === 'time' ? { seconds: ex.seconds } : { reps: ex.mode === 'max' ? readNumber('f-reps') : ex.reps };
+    if (ex.weighted) entry.kg = store.lastFor(ex.id).kg ?? null;
+    logSet(entry);
+    return;
+  }
   if (ex.mode === 'time') return;
   const reps = readNumber('f-reps');
   const kg = ex.weighted ? readNumber('f-kg') : null;
@@ -698,7 +892,7 @@ function endRest() {
   active.restEnd = null;
   store.saveActive(active);
   renderSession();
-  announce(`A trabajar: ${curEx().name}, serie ${active.set + 1}.`);
+  announce(`A trabajar: ${curEx().name}, ${isRoundsActive() ? 'ronda' : 'serie'} ${active.set + 1}.`);
 }
 
 function complete(partial) {
@@ -715,6 +909,14 @@ function complete(partial) {
   };
   if (active.kind === 'circuit') record.kind = 'circuit';
   if (isMobility(active.routine)) record.mobility = true;
+  if (active.kind === 'rounds') {
+    // Rutina C: rondas completas y ejercicios sueltos de la que quedó a medias.
+    const n = active.routine.exercises.length;
+    record.kind = 'rounds';
+    record.rounds = Math.floor(active.log.length / n);
+    if (active.log.length % n) record.roundsExtra = active.log.length % n;
+    if (active.amrap) { record.amrap = true; record.amrapMinutes = active.routine.amrapMinutes; }
+  }
   db.sessions.push(record);
   persist();
   active = null;
@@ -741,6 +943,18 @@ function tick() {
   const elapsed = app.querySelector('[data-elapsed]');
   if (elapsed) elapsed.textContent = fmtClock((now - new Date(active.startedAt)) / 1000);
   if (active.kind === 'circuit') { tickCircuit(now); return; }
+  if (active.kind === 'rounds') {
+    if (active.phase === 'warmup') return;
+    if (active.phase === 'warmup-run') {
+      if (updateCountdown(active.warmupEnd - now, active.warmupTotal) <= 0) { signal.done(db.settings); endWarmup(); }
+      return;
+    }
+    if (active.amrap) {
+      if (active.paused || active.amrapEnd == null) return;
+      if (updateCountdown(active.amrapEnd - now, active.amrapTotal) <= 0) { signal.done(db.settings); complete(false); }
+      return;
+    }
+  }
 
   let end; let total;
   if (active.phase === 'rest') { end = active.restEnd; total = active.restTotal; }
@@ -779,13 +993,16 @@ function updateCountdown(remainingMs, total) {
 let autoPaused = false;
 function openExitSheet() {
   const n = active.log.length;
-  if (active.kind === 'circuit') {
-    // Mientras decides, el circuito se detiene; si sigues, retoma donde iba.
+  if (active.kind === 'circuit' || isAmrapRunning(active)) {
+    // Mientras decides, el circuito (o el reloj del AMRAP) se detiene; si sigues, retoma donde iba.
     autoPaused = !active.paused;
     pauseCircuit();
+    const k = active.routine.exercises.length;
     openSheet(`
-      <h2 id="sheet-title">¿Terminar el circuito?</h2>
-      <p>${n ? `Llevas ${n} de ${unitsText(circuitIntervals(active.routine), true)}. Puedes guardarlos como sesión parcial.` : 'Todavía no terminas ningún ejercicio.'}</p>
+      <h2 id="sheet-title">¿Terminar ${active.kind === 'circuit' ? 'el circuito' : 'el AMRAP'}?</h2>
+      <p>${!n ? 'Todavía no terminas ningún ejercicio.' : active.kind === 'circuit'
+        ? `Llevas ${n} de ${unitsText(circuitIntervals(active.routine), true)}. Puedes guardarlos como sesión parcial.`
+        : `Llevas ${roundsText(Math.floor(n / k), n % k)}. Puedes guardarlas como sesión parcial.`}</p>
       <div class="sheet-actions">
         ${n ? '<button class="btn plate" data-action="save-partial" data-testid="save-partial">Terminar y guardar</button>' : ''}
         <button class="btn btn-line" data-action="close-sheet">Seguir entrenando</button>
@@ -795,7 +1012,7 @@ function openExitSheet() {
   }
   openSheet(`
     <h2 id="sheet-title">¿Salir de la sesión?</h2>
-    <p>${n ? `Llevas ${n} ${n === 1 ? 'serie' : 'series'}. Puedes guardarlas como sesión parcial.` : 'Todavía no anotas ninguna serie.'}</p>
+    <p>${n ? `Llevas ${isRoundsActive() ? plural(n, 'ejercicio', 'ejercicios') : plural(n, 'serie', 'series')}. Puedes guardarl${isRoundsActive() ? 'os' : 'as'} como sesión parcial.` : 'Todavía no anotas ninguna serie.'}</p>
     <div class="sheet-actions">
       ${n ? '<button class="btn plate" data-action="save-partial" data-testid="save-partial">Guardar lo que llevo</button>' : ''}
       <button class="btn btn-line" data-action="close-sheet">Seguir entrenando</button>
@@ -851,8 +1068,9 @@ function viewHistory() {
             <summary>
               <span class="h-date">${esc(cap(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })))}</span>
               <span class="h-name">${esc(s.routineName)}${isMobilitySession(s) ? ' <span class="h-tag h-tag-movilidad" data-testid="mobility-tag">Movilidad</span>'
-                : isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>' : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
-              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${unitsText(s.sets.length, isCircuitSession(s))}</span>
+                : isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>'
+                : s.amrap ? ` <span class="h-tag h-tag-amrap" data-testid="amrap-tag">AMRAP ${esc(s.amrapMinutes)} min</span>` : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
+              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${isRoundsSession(s) ? roundsText(s.rounds, s.roundsExtra) : unitsText(s.sets.length, isCircuitSession(s))}</span>
             </summary>
             <ul class="h-detail">${summarizeSets(s.sets)}</ul>
             <button class="btn-quiet btn-quiet-danger" data-action="delete-session" data-id="${esc(s.id)}">Borrar esta sesión</button>
@@ -889,9 +1107,11 @@ function viewRoutines() {
       ${db.routines.map((r) => `
         <li class="r-item">
           <h2 class="r-name">${esc(r.name)}</h2>
-          <p class="r-days">${isMobility(r) ? `A demanda, con “${esc(r.name)}” en Hoy · no cuenta para la meta` : isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy' : esc(daysText(r.days))}</p>
+          <p class="r-days">${isMobility(r) ? `A demanda, con “${esc(r.name)}” en Hoy · no cuenta para la meta` : isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy'
+            : isRounds(r) && !r.days.length ? 'A demanda: elígela en Hoy, junto a las otras' : esc(daysText(r.days))}</p>
           <p class="r-meta">${isCircuit(r)
             ? `${isMobility(r) ? 'Movilidad' : 'Circuito'} · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(r.rounds, 'ronda', 'rondas')} · ${r.work} s trabajo / ${r.rest} s ${restWord(r)} · ${durationText(circuitSeconds(r))}`
+            : isRounds(r) ? `Circuito de fuerza · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${roundsMeta(r)}`
             : `${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s`}</p>
           <a class="btn btn-line" href="#/rutinas/${encodeURIComponent(r.id)}" data-testid="edit-routine-${esc(r.id)}">Editar ${esc(r.name)}</a>
         </li>`).join('')}
@@ -901,7 +1121,8 @@ function viewRoutines() {
     </div>`);
 }
 
-function exEditor(ex, i, n) {
+/** Editor de un ejercicio de fuerza. En la Rutina C (`rounds`) no hay series: las da la ronda. */
+function exEditor(ex, i, n, rounds = false) {
   const id = `e${i}`;
   const modeOpts = Object.entries(MODES).map(([k, v]) => `<option value="${k}"${ex.mode === k ? ' selected' : ''}>${v}</option>`).join('');
   let target = '';
@@ -911,6 +1132,8 @@ function exEditor(ex, i, n) {
     target = numField(`${id}-min`, 'Mínimo', ex.reps, 1, 100, 1, i, 'reps') + numField(`${id}-max`, 'Máximo', ex.repsMax, 1, 100, 1, i, 'repsMax');
   } else if (ex.mode === 'time') {
     target = numField(`${id}-sec`, 'Segundos', ex.seconds, 5, 600, 5, i, 'seconds');
+  } else if (ex.mode === 'max' && rounds) {
+    target = numField(`${id}-goal`, 'Meta', ex.goal, 1, 100, 1, i, 'goal');
   }
   return `
     <li class="ex-edit">
@@ -924,9 +1147,14 @@ function exEditor(ex, i, n) {
           <label for="${id}-mode">Tipo</label>
           <select id="${id}-mode" data-ex="${i}" data-field="mode">${modeOpts}</select>
         </div>
-        ${numField(`${id}-sets`, 'Series', ex.sets, 1, 10, 1, i, 'sets')}
+        ${rounds ? '' : numField(`${id}-sets`, 'Series', ex.sets, 1, 10, 1, i, 'sets')}
         ${target}
       </div>
+      ${rounds ? `
+      <div class="mini mini-wide">
+        <label for="${id}-note">Indicación</label>
+        <input id="${id}-note" type="text" value="${esc(ex.note ?? '')}" data-ex="${i}" data-field="note" maxlength="160">
+      </div>` : ''}
       <div class="ex-edit-checks">
         <label class="check"><input type="checkbox" data-ex="${i}" data-field="perSide"${ex.perSide ? ' checked' : ''}> Por lado</label>
         <label class="check"><input type="checkbox" data-ex="${i}" data-field="weighted"${ex.weighted ? ' checked' : ''}> Con kettlebell</label>
@@ -981,6 +1209,10 @@ function smallStepper(id, label, value, min, max, step, rfield, unit) {
     </div>`;
 }
 
+function roundsMeta(r) {
+  return `${plural(r.rounds, 'ronda', 'rondas')} · descanso ${r.rest} s entre rondas · ≈ ${estimateMinutes(r)} min · o ${r.amrapMinutes} min AMRAP`;
+}
+
 function circuitMeta(r) {
   return `${plural(totalSets(r), 'intervalo', 'intervalos')} · ${durationText(circuitSeconds(r))}`;
 }
@@ -1011,10 +1243,43 @@ function viewCircuitEdit(r) {
     </form>`);
 }
 
+function viewRoundsEdit(r) {
+  return shell('rutinas', `
+    <header class="page-head page-head-back">
+      <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
+      <h1 class="page-h">${esc(r.name)}</h1>
+    </header>
+    <form class="editor" data-form="routine" data-routine="${esc(r.id)}" autocomplete="off" novalidate>
+      <div class="mini mini-wide">
+        <label for="r-name">Nombre</label>
+        <input id="r-name" type="text" value="${esc(r.name)}" data-rfield="name" maxlength="40" required>
+      </div>
+      <p class="hint">Circuito de fuerza: los ejercicios van seguidos y descansas al cerrar cada ronda. Al empezar eliges la versión completa o ${r.amrapMinutes} min AMRAP. Cuenta para la meta semanal y la racha.</p>
+      <fieldset class="days">
+        <legend>Días que toca <span class="opt">(opcional)</span></legend>
+        <div class="days-row">
+          ${WEEK_ORDER.map((d) => `<button type="button" class="day-toggle" data-action="toggle-day" data-day="${d}" aria-pressed="${r.days.includes(d)}" aria-label="${cap(DAY_NAMES[d])}">${DAY_LETTERS[d]}</button>`).join('')}
+        </div>
+      </fieldset>
+      ${smallStepper('r-rounds', 'Rondas', r.rounds, 1, 10, 1, 'rounds', ['Una ronda menos', 'Una ronda más'])}
+      ${smallStepper('r-rest', 'Descanso entre rondas, en segundos', r.rest, 0, 180, 5, 'rest', ['Cinco segundos menos de descanso', 'Cinco segundos más de descanso'])}
+      <h2 class="sec-h">Ejercicios <span class="sec-count">${r.exercises.length}</span></h2>
+      ${r.exercises.length ? `<ol class="ex-list">${r.exercises.map((ex, i) => exEditor(ex, i, r.exercises.length, true)).join('')}</ol>`
+        : '<p class="empty-inline">Sin ejercicios. Agrega el primero.</p>'}
+      <button type="button" class="btn btn-line" data-action="ex-add">${icon('mas')} Agregar ejercicio</button>
+      <p class="plan-meta" data-estimate>${roundsMeta(r)}</p>
+      <p class="saved-note" data-saved aria-live="polite">Los cambios se guardan solos.</p>
+      <div class="danger-zone">
+        <button type="button" class="btn-quiet btn-quiet-danger" data-action="delete-routine">Borrar ${esc(r.name)}</button>
+      </div>
+    </form>`);
+}
+
 function viewRoutineEdit(id) {
   const r = routineById(id);
   if (!r) return null;
   if (isCircuit(r)) return viewCircuitEdit(r);
+  if (isRounds(r)) return viewRoundsEdit(r);
   return shell('rutinas', `
     <header class="page-head page-head-back">
       <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
@@ -1064,7 +1329,7 @@ function rerenderEditor() {
 function markSaved() {
   const r = editingRoutine();
   const est = app.querySelector('[data-estimate]');
-  if (r && est) est.textContent = isCircuit(r) ? circuitMeta(r) : `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
+  if (r && est) est.textContent = isCircuit(r) ? circuitMeta(r) : isRounds(r) ? roundsMeta(r) : `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
   const note = app.querySelector('[data-saved]');
   if (note) note.textContent = 'Cambios guardados.';
 }
@@ -1093,9 +1358,10 @@ function applyExerciseField(r, i, field, el) {
     if (ex.mode === 'reps' && !ex.reps) ex.reps = 10;
     if (ex.mode === 'range') { ex.reps = ex.reps || 5; ex.repsMax = Math.max(ex.repsMax || 8, ex.reps); }
     if (ex.mode === 'time' && !ex.seconds) ex.seconds = 30;
+    if (ex.mode === 'max' && !ex.goal && editingRoutine() && isRounds(editingRoutine())) ex.goal = 10;
     return true;
   }
-  const limits = { sets: [1, 10], reps: [1, 100], repsMax: [1, 100], seconds: [5, 600] }[field];
+  const limits = { sets: [1, 10], reps: [1, 100], repsMax: [1, 100], seconds: [5, 600], goal: [1, 100] }[field];
   if (!limits) return false;
   const n = Math.round(Number(el.value));
   const v = Number.isFinite(n) && el.value !== '' ? clamp(n, ...limits) : ex[field] ?? limits[0];
@@ -1206,7 +1472,7 @@ function confirmSheet(title, text, label, fn) {
 sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
 // Al cerrar la hoja de salida sin terminar (botón, velo o Escape), el circuito retoma.
 sheet.addEventListener('close', () => {
-  if (autoPaused && active?.kind === 'circuit') resumeCircuit();
+  if (autoPaused && active) resumeCircuit();
   autoPaused = false;
 });
 
@@ -1248,10 +1514,20 @@ document.addEventListener('click', (e) => {
   const r = editingRoutine();
 
   switch (a) {
-    case 'start':
+    case 'start': {
       if (active) { location.hash = '#/sesion'; return; }
+      const chosen = routineById(t.dataset.routine);
+      if (isRounds(chosen) && chosen.exercises.length) { openRoundsChoice(chosen); return; }
       startSession(t.dataset.routine);
       break;
+    }
+    case 'start-rounds':
+      closeSheet();
+      if (active) return;
+      startSession(t.dataset.routine, { amrap: t.dataset.mode === 'amrap' });
+      break;
+    case 'start-warmup': startWarmup(); break;
+    case 'skip-warmup': endWarmup(); break;
     case 'finish-set': finishSet(); break;
     case 'pause-circuit': pauseCircuit(); break;
     case 'resume-circuit': resumeCircuit(); break;
@@ -1351,7 +1627,8 @@ document.addEventListener('click', (e) => {
       let id = slugify(name);
       const ids = new Set(r.exercises.map((x) => x.id));
       while (ids.has(id)) id = `${slugify(name)}-${Math.random().toString(36).slice(2, 6)}`;
-      r.exercises.push(isCircuit(r) ? { id, name } : { id, name, sets: 3, mode: 'reps', reps: 10, weighted: false });
+      r.exercises.push(isCircuit(r) ? { id, name } : isRounds(r) ? { id, name, mode: 'reps', reps: 10, weighted: false }
+        : { id, name, sets: 3, mode: 'reps', reps: 10, weighted: false });
       persist();
       rerenderEditor();
       const inputs = app.querySelectorAll('.ex-edit-name');
@@ -1362,7 +1639,7 @@ document.addEventListener('click', (e) => {
     case 'delete-routine':
       if (!r) return;
       if (db.routines.length === 1) { toast('Necesitas al menos una rutina.'); return; }
-      confirmSheet(`¿Borrar ${r.name}?`, 'Tu historial se queda como está. La rutina no se puede recuperar, salvo con “Restaurar rutinas originales” si era la A o la B.', 'Borrar rutina', () => {
+      confirmSheet(`¿Borrar ${r.name}?`, 'Tu historial se queda como está. La rutina no se puede recuperar, salvo con “Restaurar rutinas originales” si era la A, la B o la C.', 'Borrar rutina', () => {
         db.routines = db.routines.filter((x) => x !== r);
         persist();
         location.hash = '#/rutinas';
@@ -1387,7 +1664,7 @@ document.addEventListener('click', (e) => {
       }
       break;
     case 'restore-routines':
-      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B, Express y Despertar vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
+      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B, C · Core 4, Express y Despertar vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
         db.routines = defaultRoutines();
         persist();
         toast('Rutinas restauradas.');
@@ -1415,7 +1692,9 @@ document.addEventListener('change', (e) => {
     if (h) h.textContent = v;
   } else if (['rest', 'rounds', 'work'].includes(el.dataset.rfield)) {
     const f = el.dataset.rfield;
-    const limits = isCircuit(r) ? { rest: [0, 120], rounds: [1, 10], work: [10, 180] }[f] : f === 'rest' ? [15, 180] : null;
+    const limits = isCircuit(r) ? { rest: [0, 120], rounds: [1, 10], work: [10, 180] }[f]
+      : isRounds(r) ? { rest: [0, 180], rounds: [1, 10] }[f]
+      : f === 'rest' ? [15, 180] : null;
     if (!limits) return;
     const n = Math.round(Number(el.value));
     r[f] = Number.isFinite(n) && el.value !== '' ? clamp(n, ...limits) : r[f];

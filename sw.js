@@ -1,6 +1,6 @@
 // Service worker: guarda toda la app para que funcione sin internet.
 // Cambia VERSION en cada publicación para que el teléfono baje lo nuevo.
-const VERSION = 'entrenos-v4';
+const VERSION = 'entrenos-v5';
 const FILES = [
   './',
   './index.html',

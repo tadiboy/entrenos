@@ -44,7 +44,35 @@ export function defaultRoutines() {
     },
     defaultExpress(),
     defaultDespertar(),
+    defaultCore4(),
   ];
+}
+
+/**
+ * Rutina C · Core 4: circuito de fuerza por rondas con 1 kettlebell, a demanda (sin días).
+ * Completa: calentamiento opcional de 3 min y 4 rondas de los 4 ejercicios seguidos, con
+ * 75 s de descanso entre rondas. Modo corto: el mismo circuito en AMRAP de 15 min.
+ * A diferencia de Despertar, cuenta para la meta semanal y la racha.
+ */
+export const CORE4_ID = 'core4';
+export function defaultCore4() {
+  return {
+    id: CORE4_ID,
+    kind: 'rounds',
+    mark: 'C', // letra en la tira de la semana si se le asignan días
+    name: 'Rutina C · Core 4',
+    days: [],
+    rounds: 4,
+    rest: 75,
+    warmup: 180,
+    amrapMinutes: 15,
+    exercises: [
+      { id: 'c-thruster', name: 'Thruster con kettlebell', mode: 'reps', reps: 10, weighted: true, note: 'Agarrada de los cuernos frente al pecho: sentadilla y, al subir, empuja arriba.' },
+      { id: 'c-remo', name: 'Remo a un brazo con kettlebell', mode: 'reps', reps: 10, perSide: true, weighted: true },
+      { id: 'c-lagartijas', name: 'Lagartijas', mode: 'max', goal: 12, weighted: false },
+      { id: 'c-swings', name: 'Swings', mode: 'reps', reps: 15, weighted: true },
+    ],
+  };
 }
 
 /**
@@ -100,6 +128,8 @@ export function defaultDespertar() {
 }
 
 export const isCircuit = (r) => r?.kind === 'circuit';
+/** Circuito de fuerza por rondas (Rutina C): se elige junto a A y B y cuenta para la meta. */
+export const isRounds = (r) => r?.kind === 'rounds';
 /** Circuito de movilidad (Despertar): no cuenta para la meta ni la racha. */
 export const isMobility = (r) => isCircuit(r) && r.mobility === true;
 
@@ -112,6 +142,23 @@ export function circuitIntervals(r) {
 export function circuitSeconds(r) {
   const n = circuitIntervals(r);
   return n * r.work + Math.max(0, n - 1) * r.rest;
+}
+
+/**
+ * Segundos estimados de una vuelta a un ejercicio de un circuito por rondas: unos 3 s por
+ * repetición (las dos manos si es por lado) más 30 s para tomar la kettlebell y acomodarse.
+ */
+function roundExerciseSeconds(ex) {
+  const sides = ex.perSide ? 2 : 1;
+  if (ex.mode === 'time') return ex.seconds * sides + 30;
+  const reps = ex.mode === 'max' ? (ex.goal || 10) : ex.mode === 'range' ? ex.repsMax : ex.reps;
+  return reps * sides * 3 + 30;
+}
+
+/** Duración estimada de la versión completa: calentamiento + rondas + descansos entre rondas. */
+export function roundsSeconds(r) {
+  const round = r.exercises.reduce((n, ex) => n + roundExerciseSeconds(ex), 0);
+  return (r.warmup || 0) + r.rounds * round + Math.max(0, r.rounds - 1) * r.rest;
 }
 
 /** "8 min 5 s", "10 min". */
@@ -136,6 +183,13 @@ export function targetText(ex) {
   }
 }
 
+/** Meta por ronda en un circuito por rondas: "10 por lado", "máx · meta 12", "15". */
+export function roundTarget(ex) {
+  const side = sideLabel(ex);
+  const t = ex.mode === 'max' ? (ex.goal ? `máx · meta ${ex.goal}` : 'máx') : targetText(ex);
+  return `${t}${side ? ' ' + side : ''}`;
+}
+
 /** "3 × 10 por lado", "2 × máx", "3 × 30 s". */
 export function prescription(ex) {
   const t = ex.mode === 'max' ? 'máx' : targetText(ex);
@@ -146,12 +200,14 @@ export function prescription(ex) {
 /** Series de una rutina de fuerza; en un circuito, sus intervalos de trabajo. */
 export function totalSets(routine) {
   if (isCircuit(routine)) return circuitIntervals(routine);
+  if (isRounds(routine)) return routine.rounds * routine.exercises.length;
   return routine.exercises.reduce((n, ex) => n + ex.sets, 0);
 }
 
 /** Duración estimada en minutos (trabajo aproximado por serie + descansos). */
 export function estimateMinutes(routine) {
   if (isCircuit(routine)) return Math.round(circuitSeconds(routine) / 60);
+  if (isRounds(routine)) return Math.round(roundsSeconds(routine) / 60);
   let work = 0;
   for (const ex of routine.exercises) {
     let perSet;
