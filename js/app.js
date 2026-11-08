@@ -3,6 +3,7 @@ import {
   sideLabel, targetText, prescription, totalSets, estimateMinutes, slugify, defaultRoutines,
   isCircuit, isMobility, circuitIntervals, circuitSeconds, durationText,
   isRounds, roundTarget,
+  isGuided, guidedMode, guidedSeconds, guidedPlan, stepSeconds, PISO_CUES, CONTROL_NOTE,
 } from './data.js';
 import * as store from './store.js';
 import * as signal from './signal.js';
@@ -19,7 +20,7 @@ let db = store.load();
 let active = store.loadActive();
 // Un circuito que quedó corriendo al cerrar la app vuelve en pausa, en la fase donde iba,
 // en vez de "correr" de golpe los intervalos que no hiciste.
-if (active?.kind === 'circuit' && !active.paused) {
+if ((active?.kind === 'circuit' || active?.kind === 'guided') && !active.paused) {
   const left = active.phaseEnd - Date.now();
   active.paused = true;
   active.pausedLeft = left > 0 ? left : active.phaseTotal;
@@ -46,11 +47,15 @@ const clamp = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const routineById = (id) => db.routines.find((r) => r.id === id);
 // Las rutinas de fuerza siguen la rotación por días; los circuitos van a demanda.
-const strengthRoutines = () => db.routines.filter((r) => !isCircuit(r));
+const strengthRoutines = () => db.routines.filter((r) => !isCircuit(r) && !isGuided(r));
 const expressRoutine = () => db.routines.find((r) => isCircuit(r) && !isMobility(r));
 const despertarRoutine = () => db.routines.find(isMobility);
+const pisoRoutine = () => db.routines.find(isGuided);
 const isCircuitSession = (s) => s?.kind === 'circuit';
-const isMobilitySession = (s) => isCircuitSession(s) && s.mobility === true;
+const isGuidedSession = (s) => s?.kind === 'guided';
+const isMobilitySession = (s) => (isCircuitSession(s) || isGuidedSession(s)) && s.mobility === true;
+/** Circuitos y sesiones guiadas corren solos fase tras fase (phaseEnd): se pausan igual. */
+const runsAlone = (a) => a?.kind === 'circuit' || a?.kind === 'guided';
 const isRoundsSession = (s) => s?.kind === 'rounds';
 /** AMRAP de la Rutina C con su reloj ya corriendo (después del calentamiento). */
 function isAmrapRunning(a) {
@@ -62,6 +67,8 @@ function roundsText(rounds, extra) {
 }
 /** En Despertar la pausa entre ejercicios es para cambiar de movimiento, no para descansar. */
 const restWord = (r) => (isMobility(r) ? 'transición' : 'descanso');
+/** "6 pasos" en una sesión guiada. */
+const stepsText = (n) => plural(n, 'paso', 'pasos');
 /** "10 intervalos" en un circuito, "17 series" en fuerza. */
 const unitsText = (n, circuit) => plural(n, circuit ? 'intervalo' : 'serie', circuit ? 'intervalos' : 'series');
 
@@ -119,6 +126,8 @@ const ICON = {
   atras: '<path d="M15 5l-7 7 7 7"/>',
   reloj: '<circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V9.5M9.5 3h5M18 6.5l1.5-1.5"/>',
   sol: '<path d="M3.5 18.5h17M7.5 18.5a4.5 4.5 0 0 1 9 0M12 6v3.5M5.5 9.5l2 2M18.5 9.5l-2 2"/>',
+  // Piso pélvico: una base y una flecha que sube y baja (aprieta y suelta).
+  piso: '<path d="M4 19.5h16M12 4v11M8.5 7.5 12 4l3.5 3.5M8.5 11.5 12 15l3.5-3.5"/>',
 };
 const icon = (name, cls = 'icon') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICON[name]}</svg>`;
 
@@ -241,6 +250,7 @@ function viewToday() {
   const others = strengthRoutines().filter((r) => r !== suggested);
   const express = expressRoutine();
   const despertar = despertarRoutine();
+  const piso = pisoRoutine();
   const dateText = cap(fmtDate(now, { weekday: 'long', day: 'numeric', month: 'long' }));
 
   let resume = '';
@@ -250,6 +260,8 @@ function viewToday() {
       <section class="resume" aria-label="Sesión sin terminar">
         <p><strong>${esc(active.routine.name)} sin terminar.</strong> ${active.amrap
           ? `Llevas ${roundsText(Math.floor(done / active.routine.exercises.length), done % active.routine.exercises.length)} del AMRAP.`
+          : active.kind === 'guided'
+          ? `Llevas ${done} de ${stepsText(guidedMode(active.routine, active.mode).steps.length)}.`
           : `Llevas ${done} de ${unitsText(totalSets(active.routine), isCircuit(active.routine))}.`}</p>
         <a class="btn btn-ink" href="#/sesion" data-testid="resume-session">Continuar sesión</a>
       </section>`;
@@ -296,11 +308,14 @@ function viewToday() {
   return shell('hoy', `
     <header class="topline">
       <p class="date">${esc(dateText)}</p>
-      ${express || despertar ? `
+      ${express || despertar || piso ? `
       <div class="quick-list">
         ${despertar ? `
         <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(despertar.id)}" data-testid="despertar-routine"
           aria-label="${esc(despertar.name)}: movilidad, ${esc(durationText(circuitSeconds(despertar)))}"${active ? ' disabled' : ''}>${icon('sol')}<span>${esc(despertar.name)}</span></button>` : ''}
+        ${piso ? `
+        <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(piso.id)}" data-testid="piso-routine"
+          aria-label="${esc(piso.name)}: movilidad, ${esc(piso.modes.map((m) => `${m.name.toLowerCase()} ${durationText(guidedSeconds(piso, m.id))}`).join(' o '))}"${active ? ' disabled' : ''}>${icon('piso')}<span>${esc(piso.name)}</span></button>` : ''}
         ${express ? `
         <button class="btn btn-line btn-quick" data-action="start" data-routine="${esc(express.id)}" data-testid="quick-routine"
           aria-label="Poco tiempo: ${esc(express.name)}, ${esc(durationText(circuitSeconds(express)))}"${active ? ' disabled' : ''}>${icon('reloj')}<span>Poco tiempo</span></button>` : ''}
@@ -328,7 +343,47 @@ function openRoundsChoice(r) {
     </div>`);
 }
 
-function startSession(routineId, { amrap = false } = {}) {
+/** Piso pélvico: se elige el modo en la hoja; Principiante va primero y es el botón principal. */
+function openGuidedChoice(r) {
+  const def = guidedMode(r);
+  const modes = [def, ...r.modes.filter((m) => m !== def)];
+  openSheet(`
+    <h2 id="sheet-title">${esc(r.name)}</h2>
+    <p>${esc(PISO_CUES.postura)}</p>
+    <div class="sheet-actions">
+      ${modes.map((m, i) => `
+      <button class="btn ${i ? 'btn-line' : 'plate'}" data-action="start-guided" data-mode="${esc(m.id)}" data-routine="${esc(r.id)}" data-testid="piso-${esc(m.id)}"${i ? '' : ' autofocus'}>${esc(m.name)} · ${esc(durationText(guidedSeconds(r, m.id)))}</button>`).join('')}
+      <p class="hint">Una sesión al día basta.</p>
+      <button class="btn-quiet" data-action="piso-info" data-routine="${esc(r.id)}" data-testid="piso-info">? Cómo ubicarlo y aviso</button>
+      <button class="btn btn-line" data-action="close-sheet">Cancelar</button>
+    </div>`);
+}
+
+/**
+ * Cómo ubicar el músculo, cómo soltarlo, postura y aviso. Sale sola la primera vez que tocas
+ * Piso pélvico; después, detrás del «?» de la hoja de modos y de la sesión.
+ */
+function openGuidedInfo(r, { first = false, inSession = false } = {}) {
+  const action = first
+    ? `<button class="btn plate" data-action="piso-intro-ok" data-routine="${esc(r.id)}" data-testid="piso-intro-ok">Entendido</button>`
+    : inSession
+    ? '<button class="btn plate" data-action="close-sheet" data-testid="piso-info-close">Seguir</button>'
+    : `<button class="btn btn-line" data-action="piso-back" data-routine="${esc(r.id)}" data-testid="piso-info-close">Volver</button>`;
+  openSheet(`
+    <h2 id="sheet-title">${esc(r.name)}</h2>
+    <div class="guided-info" data-testid="piso-info-sheet">
+      <h3 class="guided-info-h">Cómo ubicarlo</h3>
+      <p>${esc(PISO_CUES.ubicar)}</p>
+      <h3 class="guided-info-h">Suelta</h3>
+      <p>${esc(PISO_CUES.soltar)}</p>
+      <p>${esc(PISO_CUES.postura)}</p>
+      <h3 class="guided-info-h">Aviso</h3>
+      ${PISO_CUES.aviso.map((t) => `<p>${esc(t)}</p>`).join('')}
+    </div>
+    <div class="sheet-actions">${action}</div>`);
+}
+
+function startSession(routineId, { amrap = false, mode = null } = {}) {
   const r = routineById(routineId);
   if (!r || !r.exercises.length) { toast('Esta rutina no tiene ejercicios.'); return; }
   signal.unlockAudio();
@@ -345,6 +400,16 @@ function startSession(routineId, { amrap = false } = {}) {
     // El circuito corre solo desde ya: cada fase termina en phaseEnd y encadena la siguiente.
     Object.assign(active, { kind: 'circuit', round: 0, paused: false, pausedLeft: null, beep: null });
     active.phaseTotal = r.work * 1000;
+    active.phaseEnd = Date.now() + active.phaseTotal;
+  }
+  if (isGuided(r)) {
+    // Piso pélvico: corre solo por su línea de tiempo (bloques, y trabajo/descanso en los intervalos).
+    const m = guidedMode(r, mode);
+    const plan = guidedPlan(r, m.id);
+    Object.assign(active, {
+      kind: 'guided', mode: m.id, modeName: m.name, plan, i: 0, ex: plan[0].step, phase: plan[0].phase,
+      paused: false, pausedLeft: null, beep: null, phaseTotal: plan[0].ms,
+    });
     active.phaseEnd = Date.now() + active.phaseTotal;
   }
   if (isRounds(r)) {
@@ -384,8 +449,9 @@ function sessionTop() {
   const total = active.routine.exercises.length;
   return `
     <header class="sbar">
-      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">${active.kind === 'circuit' || isAmrapRunning(active) ? 'Terminar' : 'Salir'}</button>
-      <p class="sbar-pos">${active.phase === 'warmup' || active.phase === 'warmup-run' ? 'Calentamiento' : `Ejercicio ${Math.min(active.ex + 1, total)} de ${total}`}</p>
+      <button class="btn-quiet" data-action="exit-session" data-testid="exit-session">${runsAlone(active) || isAmrapRunning(active) ? 'Terminar' : 'Salir'}</button>
+      <p class="sbar-pos">${active.kind === 'guided' ? `Paso ${active.ex + 1} de ${guidedMode(active.routine, active.mode).steps.length}`
+        : active.phase === 'warmup' || active.phase === 'warmup-run' ? 'Calentamiento' : `Ejercicio ${Math.min(active.ex + 1, total)} de ${total}`}</p>
       <p class="sbar-clock" aria-label="Tiempo de sesión"><span data-elapsed>${fmtClock((Date.now() - new Date(active.startedAt)) / 1000)}</span></p>
     </header>`;
 }
@@ -741,7 +807,7 @@ function tickCircuit(now) {
 /** Pausa el circuito o el reloj del AMRAP de la Rutina C. */
 function pauseCircuit() {
   if (!active || active.paused) return;
-  if (active.kind === 'circuit') active.pausedLeft = Math.max(0, active.phaseEnd - Date.now());
+  if (runsAlone(active)) active.pausedLeft = Math.max(0, active.phaseEnd - Date.now());
   else if (isAmrapRunning(active)) active.pausedLeft = Math.max(0, active.amrapEnd - Date.now());
   else return;
   active.paused = true;
@@ -752,7 +818,7 @@ function pauseCircuit() {
 
 function resumeCircuit() {
   if (!active || !active.paused) return;
-  if (active.kind === 'circuit') active.phaseEnd = Date.now() + active.pausedLeft;
+  if (runsAlone(active)) active.phaseEnd = Date.now() + active.pausedLeft;
   else if (isAmrapRunning(active)) active.amrapEnd = Date.now() + active.pausedLeft;
   else return;
   signal.unlockAudio();
@@ -761,7 +827,132 @@ function resumeCircuit() {
   active.beep = null;
   store.saveActive(active);
   renderSession(false);
-  announce(active.kind === 'circuit' ? 'Sigue el circuito.' : 'Sigue el AMRAP.');
+  announce(active.kind === 'circuit' ? 'Sigue el circuito.' : active.kind === 'guided' ? 'Sigue la sesión.' : 'Sigue el AMRAP.');
+}
+
+// ---- Piso pélvico: pasos guiados, bloque o intervalos de trabajo/descanso ----
+
+const guidedSteps = () => guidedMode(active.routine, active.mode).steps;
+const stepEx = (st) => active.routine.exercises.find((e) => e.id === st.ex) || { id: st.ex, name: st.ex };
+const workWord = (ex) => ex.workWord || 'Trabajo';
+const restWordOf = (ex) => ex.restWord || 'Descanso';
+/** "10 × 5 s / 10 s" o "40 s". */
+const stepText = (st) => (st.reps ? `${st.reps} × ${st.work} s / ${st.rest} s` : `${st.seconds} s`);
+
+/** Qué sigue después de la fase en curso: la otra mitad del intervalo o el paso siguiente. */
+function guidedAfter() {
+  const ph = active.plan[active.i];
+  const next = active.plan[active.i + 1];
+  if (!next) return { what: 'Último paso', detail: 'Al sonar, terminaste' };
+  const steps = guidedSteps();
+  if (next.step !== ph.step) {
+    const st = steps[next.step];
+    return { what: `Sigue: ${stepEx(st).name}`, detail: stepText(st) };
+  }
+  const st = steps[ph.step];
+  const ex = stepEx(st);
+  return next.phase === 'rest'
+    ? { what: `Luego: ${restWordOf(ex)}`, detail: `${st.rest} s` }
+    : { what: `Luego: ${workWord(ex)}`, detail: `${st.work} s · ${ex.unit || 'intervalo'} ${next.rep + 1} de ${st.reps}` };
+}
+
+function viewGuided() {
+  const ph = active.plan[active.i];
+  const st = guidedSteps()[ph.step];
+  const ex = stepEx(st);
+  const rest = ph.phase === 'rest';
+  const left = Math.ceil(circuitLeftMs() / 1000);
+  const after = guidedAfter();
+  const word = ph.phase === 'block' ? '' : rest ? restWordOf(ex) : workWord(ex);
+  const state = active.paused ? 'En pausa' : st.reps ? `${st.work} s ${workWord(ex).toLowerCase()} · ${st.rest} s ${restWordOf(ex).toLowerCase()}` : `${st.seconds} s`;
+  const pauseBtn = active.paused
+    ? '<button class="btn plate" data-action="resume-circuit" data-testid="resume-circuit">Seguir</button>'
+    : '<button class="btn plate" data-action="pause-circuit" data-testid="pause-circuit">Pausa</button>';
+  const risen = rest ? (1 - circuitLeftMs() / active.phaseTotal).toFixed(4) : 0;
+  return `
+    ${rest ? `<div class="rise" aria-hidden="true"><div class="rise-fill" data-rise style="transform: scaleY(${risen})"></div></div>` : ''}
+    ${sessionTop()}
+    <main class="session session-circuit session-guided${rest ? ' session-rest' : ''}" data-testid="session" data-phase="${ph.phase}" data-paused="${!!active.paused}">
+      <h1 class="ex-name" data-testid="guided-step">${esc(ex.name)}</h1>
+      ${st.reps ? `
+      <div class="setline">
+        <p class="phase-tag" data-testid="guided-phase">${esc(word)}</p>
+        <p class="setline-text" data-testid="guided-count">${esc(cap(ex.unit || 'intervalo'))} ${ph.rep + 1} de ${st.reps}</p>
+      </div>` : ''}
+      <div class="target target-time">
+        <div class="timer" data-testid="timer" role="timer" aria-label="${rest ? 'Descanso' : 'Tiempo'} restante">${digits(fmtClock(left))}</div>
+        <p class="target-unit" data-testid="circuit-state">${esc(state)}</p>
+      </div>
+      ${ex.note ? `<p class="guided-cue" data-testid="guided-cue">${esc(ex.note)}</p>` : ''}
+      <p class="next" data-testid="next-up">
+        <span class="next-what">${esc(after.what)}</span>
+        <span class="next-detail">${esc(after.detail)}</span></p>
+      <div class="dock dock-pair">
+        <button class="btn btn-line" data-action="piso-help" data-testid="piso-help" aria-label="Cómo ubicarlo y aviso">?</button>
+        ${pauseBtn}
+      </div>
+    </main>`;
+}
+
+/** Cierra la fase en curso y abre la siguiente (encadenada al phaseEnd anterior, como el circuito). */
+function advanceGuided() {
+  const ph = active.plan[active.i];
+  const next = active.plan[active.i + 1];
+  if (!next || next.step !== ph.step) {
+    // Paso terminado: se anota entero (un bloque o sus intervalos).
+    const st = guidedSteps()[ph.step];
+    const ex = stepEx(st);
+    const entry = { exId: ex.id, exName: ex.name, set: 1, seconds: stepSeconds(st) };
+    if (st.reps) Object.assign(entry, { intervals: st.reps, work: st.work, rest: st.rest });
+    active.log.push(entry);
+  }
+  if (!next) return 'done';
+  active.i += 1;
+  active.ex = next.step;
+  active.phase = next.phase;
+  active.phaseTotal = next.ms;
+  active.phaseEnd += next.ms;
+  active.beep = null;
+  return next.phase;
+}
+
+function tickGuided(now) {
+  if (active.paused) return;
+  let changed = null;
+  while (active && !active.paused && now >= active.phaseEnd) {
+    changed = advanceGuided();
+    if (changed === 'done') {
+      signal.done(db.settings);
+      complete(false);
+      return;
+    }
+  }
+  if (changed) {
+    store.saveActive(active);
+    const ph = active.plan[active.i];
+    const st = guidedSteps()[ph.step];
+    const ex = stepEx(st);
+    if (changed === 'rest') signal.toRest(db.settings); else signal.toWork(db.settings);
+    announce(ph.phase === 'block' ? `${ex.name}, ${st.seconds} segundos.`
+      : `${ph.phase === 'rest' ? restWordOf(ex) : workWord(ex)}, ${ph.phase === 'rest' ? st.rest : st.work} segundos. ${ex.name}, ${ex.unit || 'intervalo'} ${ph.rep + 1} de ${st.reps}.`);
+    renderSession();
+    return;
+  }
+  updateCountdown(active.phaseEnd - now, active.phaseTotal);
+}
+
+/** Nota «Control» al terminar Piso pélvico: no se cronometra y se cierra con un toque. */
+function controlCard() {
+  return `
+      <section class="control" data-testid="control-card" aria-labelledby="control-h">
+        <div class="control-head">
+          <h2 id="control-h" class="control-h">${esc(CONTROL_NOTE.title)}</h2>
+          <button class="btn-quiet" data-action="close-control" data-testid="close-control">Cerrar</button>
+        </div>
+        <p>${esc(CONTROL_NOTE.intro)}</p>
+        <ol class="control-steps">${CONTROL_NOTE.steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
+        ${CONTROL_NOTE.outro.map((t) => `<p>${esc(t)}</p>`).join('')}
+      </section>`;
 }
 
 function viewDone() {
@@ -772,16 +963,17 @@ function viewDone() {
   const st = store.streak(db.sessions, now);
   const mobility = isMobilitySession(s);
   const rounds = isRoundsSession(s);
+  const guided = isGuidedSession(s);
   const mins = Math.max(1, Math.round(s.durationSec / 60));
   const goal = count >= store.WEEKLY_GOAL;
   return `
     <main class="session session-done" data-testid="session-done">
       <h1 class="ex-name done-h">${s.partial ? 'Guardado' : 'Listo'}</h1>
-      <p class="done-sub">${esc(s.routineName)}${s.amrap ? `, AMRAP de ${s.amrapMinutes} min` : ''}${s.partial ? ', sesión parcial' : ''}</p>
+      <p class="done-sub">${esc(s.routineName)}${s.amrap ? `, AMRAP de ${s.amrapMinutes} min` : ''}${s.modeName ? `, ${esc(s.modeName.toLowerCase())}` : ''}${s.partial ? ', sesión parcial' : ''}</p>
       <div class="streak done-lines">
         ${rounds
           ? `<p class="streak-line" data-testid="done-rounds"><span class="num">${mins}</span> min · <span class="num">${s.rounds}</span> ${s.rounds === 1 ? 'ronda' : 'rondas'}${s.roundsExtra ? ` + ${s.roundsExtra}` : ''}</p>`
-          : `<p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${unitsText(s.sets.length, isCircuitSession(s)).replace(/^\d+ /, '')}</p>`}
+          : `<p class="streak-line"><span class="num">${mins}</span> min · <span class="num">${s.sets.length}</span> ${(guided ? stepsText(s.sets.length) : unitsText(s.sets.length, isCircuitSession(s))).replace(/^\d+ /, '')}</p>`}
         <p class="streak-line"><span class="num">${count}</span> de ${store.WEEKLY_GOAL} esta semana</p>
         ${st ? `<p class="streak-line"><span class="num">${st}</span> ${st === 1 ? 'semana' : 'semanas'} de racha</p>` : ''}
       </div>
@@ -790,6 +982,7 @@ function viewDone() {
         : goal
         ? 'Meta de la semana cumplida.'
         : `Te ${store.WEEKLY_GOAL - count === 1 ? 'falta 1 sesión' : `faltan ${store.WEEKLY_GOAL - count} sesiones`} para la meta de la semana.`}</p>
+      ${guided ? controlCard() : ''}
       <div class="dock dock-stack">
         <a class="btn plate" href="#/historial" data-testid="go-history">Ver historial</a>
         <a class="btn btn-line" href="#/hoy">Volver a Hoy</a>
@@ -808,7 +1001,8 @@ function renderSession(paint = true) {
     return;
   }
   signal.keepAwake(true);
-  if (active.kind === 'circuit') mount(viewCircuit(), active.phase === 'rest' ? 'rosa' : 'amarillo', { paint });
+  if (active.kind === 'guided') mount(viewGuided(), active.phase === 'rest' ? 'rosa' : 'amarillo', { paint });
+  else if (active.kind === 'circuit') mount(viewCircuit(), active.phase === 'rest' ? 'rosa' : 'amarillo', { paint });
   else if (active.phase === 'warmup' || active.phase === 'warmup-run') mount(viewWarmup(), 'amarillo', { paint });
   else if (active.amrap) mount(viewAmrap(), 'amarillo', { paint });
   else if (active.phase === 'rest') mount(viewRest(), 'rosa', { paint });
@@ -908,7 +1102,8 @@ function complete(partial) {
     sets: active.log,
   };
   if (active.kind === 'circuit') record.kind = 'circuit';
-  if (isMobility(active.routine)) record.mobility = true;
+  if (isMobility(active.routine) || isGuided(active.routine)) record.mobility = true;
+  if (active.kind === 'guided') Object.assign(record, { kind: 'guided', mode: active.mode, modeName: active.modeName });
   if (active.kind === 'rounds') {
     // Rutina C: rondas completas y ejercicios sueltos de la que quedó a medias.
     const n = active.routine.exercises.length;
@@ -943,6 +1138,7 @@ function tick() {
   const elapsed = app.querySelector('[data-elapsed]');
   if (elapsed) elapsed.textContent = fmtClock((now - new Date(active.startedAt)) / 1000);
   if (active.kind === 'circuit') { tickCircuit(now); return; }
+  if (active.kind === 'guided') { tickGuided(now); return; }
   if (active.kind === 'rounds') {
     if (active.phase === 'warmup') return;
     if (active.phase === 'warmup-run') {
@@ -993,14 +1189,16 @@ function updateCountdown(remainingMs, total) {
 let autoPaused = false;
 function openExitSheet() {
   const n = active.log.length;
-  if (active.kind === 'circuit' || isAmrapRunning(active)) {
+  if (runsAlone(active) || isAmrapRunning(active)) {
     // Mientras decides, el circuito (o el reloj del AMRAP) se detiene; si sigues, retoma donde iba.
     autoPaused = !active.paused;
     pauseCircuit();
     const k = active.routine.exercises.length;
     openSheet(`
-      <h2 id="sheet-title">¿Terminar ${active.kind === 'circuit' ? 'el circuito' : 'el AMRAP'}?</h2>
-      <p>${!n ? 'Todavía no terminas ningún ejercicio.' : active.kind === 'circuit'
+      <h2 id="sheet-title">¿Terminar ${active.kind === 'circuit' ? 'el circuito' : active.kind === 'guided' ? 'la sesión' : 'el AMRAP'}?</h2>
+      <p>${!n ? (active.kind === 'guided' ? 'Todavía no terminas ningún paso.' : 'Todavía no terminas ningún ejercicio.')
+        : active.kind === 'guided' ? `Llevas ${n} de ${stepsText(guidedSteps().length)}. Puedes guardarlos como sesión parcial.`
+        : active.kind === 'circuit'
         ? `Llevas ${n} de ${unitsText(circuitIntervals(active.routine), true)}. Puedes guardarlos como sesión parcial.`
         : `Llevas ${roundsText(Math.floor(n / k), n % k)}. Puedes guardarlas como sesión parcial.`}</p>
       <div class="sheet-actions">
@@ -1029,7 +1227,7 @@ function summarizeSets(sets) {
   for (const s of sets) {
     let g = groups.find((x) => x.exId === s.exId);
     if (!g) { g = { exId: s.exId, name: s.exName, items: [], kg: [] }; groups.push(g); }
-    g.items.push(s.seconds != null ? `${s.seconds} s` : s.reps != null ? String(s.reps) : '—');
+    g.items.push(s.intervals ? `${s.intervals} × ${s.work} s / ${s.rest} s` : s.seconds != null ? `${s.seconds} s` : s.reps != null ? String(s.reps) : '—');
     if (s.kg != null) g.kg.push(s.kg);
   }
   return groups.map((g) => {
@@ -1055,7 +1253,7 @@ function viewHistory() {
             <span class="wk-label" aria-hidden="true">${esc(fmtDate(w.start, { day: 'numeric' }))}</span>
           </li>`).join('')}
       </ol>
-      <figcaption id="weeks-cap">Últimas 8 semanas, por lunes. Cada cuadro es una sesión; la meta son ${store.WEEKLY_GOAL}. Despertar no cuenta.</figcaption>
+      <figcaption id="weeks-cap">Últimas 8 semanas, por lunes. Cada cuadro es una sesión; la meta son ${store.WEEKLY_GOAL}. Despertar y Piso pélvico no cuentan.</figcaption>
     </figure>`;
 
   const sessions = list.length ? `
@@ -1069,8 +1267,8 @@ function viewHistory() {
               <span class="h-date">${esc(cap(fmtDate(d, { weekday: 'short', day: 'numeric', month: 'short' })))}</span>
               <span class="h-name">${esc(s.routineName)}${isMobilitySession(s) ? ' <span class="h-tag h-tag-movilidad" data-testid="mobility-tag">Movilidad</span>'
                 : isCircuitSession(s) ? ' <span class="h-tag h-tag-express" data-testid="express-tag">Express</span>'
-                : s.amrap ? ` <span class="h-tag h-tag-amrap" data-testid="amrap-tag">AMRAP ${esc(s.amrapMinutes)} min</span>` : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
-              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${isRoundsSession(s) ? roundsText(s.rounds, s.roundsExtra) : unitsText(s.sets.length, isCircuitSession(s))}</span>
+                : s.amrap ? ` <span class="h-tag h-tag-amrap" data-testid="amrap-tag">AMRAP ${esc(s.amrapMinutes)} min</span>` : ''}${s.modeName ? ` <span class="h-tag" data-testid="mode-tag">${esc(s.modeName)}</span>` : ''}${s.partial ? ' <span class="h-tag">parcial</span>' : ''}</span>
+              <span class="h-meta">${Math.max(1, Math.round(s.durationSec / 60))} min · ${isRoundsSession(s) ? roundsText(s.rounds, s.roundsExtra) : isGuidedSession(s) ? stepsText(s.sets.length) : unitsText(s.sets.length, isCircuitSession(s))}</span>
             </summary>
             <ul class="h-detail">${summarizeSets(s.sets)}</ul>
             <button class="btn-quiet btn-quiet-danger" data-action="delete-session" data-id="${esc(s.id)}">Borrar esta sesión</button>
@@ -1107,9 +1305,10 @@ function viewRoutines() {
       ${db.routines.map((r) => `
         <li class="r-item">
           <h2 class="r-name">${esc(r.name)}</h2>
-          <p class="r-days">${isMobility(r) ? `A demanda, con “${esc(r.name)}” en Hoy · no cuenta para la meta` : isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy'
+          <p class="r-days">${isMobility(r) || isGuided(r) ? `A demanda, con “${esc(r.name)}” en Hoy · no cuenta para la meta` : isCircuit(r) ? 'A demanda, con “Poco tiempo” en Hoy'
             : isRounds(r) && !r.days.length ? 'A demanda: elígela en Hoy, junto a las otras' : esc(daysText(r.days))}</p>
-          <p class="r-meta">${isCircuit(r)
+          <p class="r-meta">${isGuided(r) ? `Movilidad · ${guidedMeta(r)}`
+            : isCircuit(r)
             ? `${isMobility(r) ? 'Movilidad' : 'Circuito'} · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(r.rounds, 'ronda', 'rondas')} · ${r.work} s trabajo / ${r.rest} s ${restWord(r)} · ${durationText(circuitSeconds(r))}`
             : isRounds(r) ? `Circuito de fuerza · ${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${roundsMeta(r)}`
             : `${plural(r.exercises.length, 'ejercicio', 'ejercicios')} · ${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min · descanso ${r.rest} s`}</p>
@@ -1213,6 +1412,37 @@ function roundsMeta(r) {
   return `${plural(r.rounds, 'ronda', 'rondas')} · descanso ${r.rest} s entre rondas · ≈ ${estimateMinutes(r)} min · o ${r.amrapMinutes} min AMRAP`;
 }
 
+/** "Principiante 7 min 50 s · Intermedio 10 min 33 s". */
+function guidedMeta(r) {
+  return r.modes.map((m) => `${m.name} ${durationText(guidedSeconds(r, m.id))}`).join(' · ');
+}
+
+/** Piso pélvico: el nombre se edita; los pasos y tiempos de cada modo se muestran tal cual. */
+function viewGuidedEdit(r) {
+  return shell('rutinas', `
+    <header class="page-head page-head-back">
+      <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
+      <h1 class="page-h">${esc(r.name)}</h1>
+    </header>
+    <form class="editor" data-form="routine" data-routine="${esc(r.id)}" autocomplete="off" novalidate>
+      <div class="mini mini-wide">
+        <label for="r-name">Nombre</label>
+        <input id="r-name" type="text" value="${esc(r.name)}" data-rfield="name" maxlength="40" required>
+      </div>
+      <p class="hint">Movilidad a demanda: no se asigna a días ni cuenta para la meta semanal ni la racha. Empiézala con “${esc(r.name)}” en Hoy y elige el modo; corre sola de principio a fin.</p>
+      ${r.modes.map((m) => `
+      <h2 class="sec-h">${esc(m.name)} <span class="sec-count">${esc(durationText(guidedSeconds(r, m.id)))}</span></h2>
+      <ol class="plan" data-testid="guided-mode-${esc(m.id)}">
+        ${m.steps.map((st) => `
+        <li><span class="plan-name">${esc((r.exercises.find((e) => e.id === st.ex) || { name: st.ex }).name)}</span><span class="plan-rx">${esc(stepText(st))}</span></li>`).join('')}
+      </ol>`).join('')}
+      <p class="saved-note" data-saved aria-live="polite">Los cambios se guardan solos.</p>
+      <div class="danger-zone">
+        <button type="button" class="btn-quiet btn-quiet-danger" data-action="delete-routine">Borrar ${esc(r.name)}</button>
+      </div>
+    </form>`);
+}
+
 function circuitMeta(r) {
   return `${plural(totalSets(r), 'intervalo', 'intervalos')} · ${durationText(circuitSeconds(r))}`;
 }
@@ -1280,6 +1510,7 @@ function viewRoutineEdit(id) {
   if (!r) return null;
   if (isCircuit(r)) return viewCircuitEdit(r);
   if (isRounds(r)) return viewRoundsEdit(r);
+  if (isGuided(r)) return viewGuidedEdit(r);
   return shell('rutinas', `
     <header class="page-head page-head-back">
       <a class="back" href="#/rutinas">${icon('atras')}<span>Rutinas</span></a>
@@ -1329,7 +1560,7 @@ function rerenderEditor() {
 function markSaved() {
   const r = editingRoutine();
   const est = app.querySelector('[data-estimate]');
-  if (r && est) est.textContent = isCircuit(r) ? circuitMeta(r) : isRounds(r) ? roundsMeta(r) : `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
+  if (r && est && !isGuided(r)) est.textContent = isCircuit(r) ? circuitMeta(r) : isRounds(r) ? roundsMeta(r) : `${plural(totalSets(r), 'serie', 'series')} · ≈ ${estimateMinutes(r)} min`;
   const note = app.querySelector('[data-saved]');
   if (note) note.textContent = 'Cambios guardados.';
 }
@@ -1518,6 +1749,11 @@ document.addEventListener('click', (e) => {
       if (active) { location.hash = '#/sesion'; return; }
       const chosen = routineById(t.dataset.routine);
       if (isRounds(chosen) && chosen.exercises.length) { openRoundsChoice(chosen); return; }
+      if (isGuided(chosen)) {
+        // La primera vez sale cómo ubicar el músculo y el aviso; luego, directo a elegir modo.
+        if (db.settings.pisoIntroSeen) openGuidedChoice(chosen); else openGuidedInfo(chosen, { first: true });
+        return;
+      }
       startSession(t.dataset.routine);
       break;
     }
@@ -1526,6 +1762,26 @@ document.addEventListener('click', (e) => {
       if (active) return;
       startSession(t.dataset.routine, { amrap: t.dataset.mode === 'amrap' });
       break;
+    case 'start-guided':
+      closeSheet();
+      if (active) return;
+      startSession(t.dataset.routine, { mode: t.dataset.mode });
+      break;
+    case 'piso-intro-ok':
+      db.settings.pisoIntroSeen = true;
+      persist();
+      openGuidedChoice(routineById(t.dataset.routine));
+      break;
+    case 'piso-info': openGuidedInfo(routineById(t.dataset.routine)); break;
+    case 'piso-back': openGuidedChoice(routineById(t.dataset.routine)); break;
+    case 'piso-help':
+      // En la sesión: se detiene mientras lees y retoma al cerrar la hoja.
+      if (!active) return;
+      autoPaused = !active.paused;
+      pauseCircuit();
+      openGuidedInfo(active.routine, { inSession: true });
+      break;
+    case 'close-control': t.closest('.control')?.remove(); break;
     case 'start-warmup': startWarmup(); break;
     case 'skip-warmup': endWarmup(); break;
     case 'finish-set': finishSet(); break;
@@ -1664,7 +1920,7 @@ document.addEventListener('click', (e) => {
       }
       break;
     case 'restore-routines':
-      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B, C · Core 4, Express y Despertar vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
+      confirmSheet('¿Restaurar las rutinas originales?', 'Las rutinas A, B, C · Core 4, Express, Despertar y Piso pélvico vuelven a como venían; las que agregaste se borran. El historial no cambia.', 'Restaurar', () => {
         db.routines = defaultRoutines();
         persist();
         toast('Rutinas restauradas.');

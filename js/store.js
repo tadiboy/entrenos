@@ -1,5 +1,5 @@
 // Persistencia local (localStorage), estadísticas semanales y respaldo JSON.
-import { defaultRoutines, defaultExpress, defaultDespertar, defaultCore4, isCircuit, isMobility, isRounds } from './data.js';
+import { defaultRoutines, defaultExpress, defaultDespertar, defaultCore4, defaultPiso, isCircuit, isMobility, isRounds, isGuided } from './data.js';
 
 // La clave conserva su nombre de la v1 para no mover datos; la versión real va en `schema`.
 const KEY = 'entrenos.v1';
@@ -9,7 +9,8 @@ const PRE_MIGRATION_KEY = 'entrenos.respaldo-antes-de-migrar';
 // 1: rutinas de fuerza. 2: agrega rutinas en circuito (Rutina Express).
 // 3: la Express por defecto pasa de 40/20 a 35/15. 4: agrega Despertar (movilidad).
 // 5: agrega la Rutina C · Core 4 (circuito de fuerza por rondas, con modo AMRAP de 15 min).
-export const SCHEMA = 5;
+// 6: agrega Piso pélvico (movilidad guiada por pasos, con modos Principiante e Intermedio).
+export const SCHEMA = 6;
 export const WEEKLY_GOAL = 3;
 
 function blank() {
@@ -79,10 +80,17 @@ function isUneditedExpressV2(r) {
  * schema anterior al 3, la Express sin editar (40/20) pasa a los tiempos nuevos. Desde
  * uno anterior al 4, se agrega Despertar al final (solo una vez: si después la borras,
  * no vuelve). Desde uno anterior al 5, se agrega la Rutina C · Core 4 al final (también una
- * sola vez). En Hoy se ofrece junto a A y B porque no es un circuito a demanda.
+ * sola vez). En Hoy se ofrece junto a A y B porque no es un circuito a demanda. Desde uno
+ * anterior al 6, se agrega Piso pélvico al final (también una sola vez).
  */
 function migrateRoutines(routines, fromSchema) {
   const out = routines.map((r) => {
+    if (isGuided(r)) {
+      // Piso pélvico: a demanda; si sus modos llegaron dañados, vuelven los de fábrica.
+      const okModes = Array.isArray(r.modes) && r.modes.length
+        && r.modes.every((m) => m && Array.isArray(m.steps) && m.steps.length);
+      return { ...r, days: [], modes: okModes ? r.modes : defaultPiso().modes };
+    }
     if (isRounds(r)) {
       const d = defaultCore4();
       return {
@@ -113,6 +121,7 @@ function migrateRoutines(routines, fromSchema) {
   if (!out.some((r) => isCircuit(r) && !isMobility(r))) addDefault(defaultExpress());
   if (fromSchema < 4 && !out.some(isMobility)) addDefault(defaultDespertar());
   if (fromSchema < 5 && !out.some(isRounds)) addDefault(defaultCore4());
+  if (fromSchema < 6 && !out.some(isGuided)) addDefault(defaultPiso());
   return out;
 }
 
@@ -167,7 +176,7 @@ export function remember(exId, setIndex, reps, kg) {
 // ---- Semanas (lunes a domingo, hora local) ---------------------------------
 
 /**
- * La meta y la racha son de fuerza: las sesiones de movilidad (Despertar) no cuentan.
+ * La meta y la racha son de fuerza: las sesiones de movilidad (Despertar, Piso pélvico) no cuentan.
  * Las de la Rutina C (completa o AMRAP de 15 min) sí cuentan, igual que A, B y Express.
  */
 export const countsForGoal = (s) => !s?.mobility;

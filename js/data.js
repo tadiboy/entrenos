@@ -45,6 +45,7 @@ export function defaultRoutines() {
     defaultExpress(),
     defaultDespertar(),
     defaultCore4(),
+    defaultPiso(),
   ];
 }
 
@@ -127,11 +128,126 @@ export function defaultDespertar() {
   };
 }
 
+/**
+ * Piso pélvico: sesión guiada de movilidad, a demanda (sin días). Como Despertar, lleva
+ * `mobility` y no cuenta para la meta semanal ni la racha. Como la Rutina C, tiene dos modos
+ * que se eligen en una hoja al empezar: Principiante (default) e Intermedio.
+ * Cada paso es un bloque cronometrado (`seconds`) o una serie de intervalos (`reps` × `work`
+ * de trabajo + `rest` de descanso, guiados uno por uno). Los textos de cada paso viven en
+ * `exercises`; los modos solo dicen qué pasos van y con qué tiempos.
+ */
+export const PISO_ID = 'piso';
+export const PISO_CUES = {
+  ubicar: 'Aprieta como si quisieras cortar el chorro al orinar, o como si aguantaras un gas. Sientes un alce en la base, hacia adentro y arriba. Glúteos, panza y muslos se quedan suaves. Sigues respirando. Para comprobarlo, hazlo una sola vez al orinar y suelta; no lo uses como ejercicio de cada día.',
+  soltar: 'Suelta del todo, como si dejaras salir un gas con suavidad o empezaras a orinar, sin pujar. El piso baja. Eso también se entrena.',
+  postura: 'Postura: recostado con rodillas flexionadas o sentado en una silla firme. De pie, hasta intermedio.',
+  aviso: [
+    'Para si hay dolor, ardor, más urgencia para orinar, o no puedes relajar el músculo después. No hagas la sesión mientras orinas (salvo esa prueba única para ubicar). No dejes el músculo apretado todo el día.',
+    'Si hay dolor pélvico, sangre, problemas para orinar o esto empeora, consulta a un médico (urólogo o fisioterapeuta de piso pélvico). Esto no sustituye una valoración médica.',
+  ],
+};
+/** Nota que aparece al terminar la sesión. No se cronometra. */
+export const CONTROL_NOTE = {
+  title: 'Control',
+  intro: 'Entrena esto a solas, con calma, no con prisa.',
+  steps: [
+    'Estimula con suavidad y califica la intensidad del 1 al 10.',
+    'Al llegar a 6 o 7, para. Nada de seguir ‘un poquito más’.',
+    'Haz el freno: aprieta el piso pélvico 5 segundos y exhala largo. Si sientes el piso ya muy apretado, haz lo contrario: suéltalo del todo y respira.',
+    'Espera a que baje a 4 o 5.',
+    'Retoma. Repite la pausa 3 o 4 veces.',
+    'En la última puedes continuar hasta el final.',
+  ],
+  outro: [
+    'Hazlo 1 o 2 veces por semana, además de la sesión diaria. El objetivo no es aguantar a fuerzas, sino reconocer la subida a tiempo y bajarla. Si te pasas del punto, no pasa nada: la próxima para un poco antes.',
+    'Si contienes la respiración o aprietas la panza, la intensidad sube más rápido. Inhala por la nariz, exhala más largo que la inhalación.',
+  ],
+};
+export function defaultPiso() {
+  return {
+    id: PISO_ID,
+    kind: 'guided',
+    mobility: true,
+    name: 'Piso pélvico',
+    days: [],
+    defaultMode: 'principiante',
+    exercises: [
+      { id: 'p-localiza', name: 'Localiza', note: 'Siéntate o recuéstate con rodillas flexionadas. Aprieta suave 3 veces para ubicar el músculo. No aprietes glúteos ni panza. Respira.' },
+      { id: 'p-suelta', name: 'Suelta del todo', note: 'Inhala por la nariz y deja que el piso baje. Exhala largo. No empujes hacia abajo con fuerza. Solo suelta.' },
+      { id: 'p-lentas', name: 'Contracciones lentas', unit: 'intervalo', workWord: 'Aprieta', restWord: 'Suelta', note: 'Aprieta hacia adentro y arriba. Aguanta. Suelta por completo antes de la siguiente. Cara y hombros relajados. No contengas la respiración.' },
+      { id: 'p-pulsos', name: 'Pulsos rápidos', unit: 'ronda', workWord: 'Pulsos', restWord: 'Descanso', note: 'Aprieta y suelta rápido, sin aguantar. Como un parpadeo abajo. Si se fatiga, para y suelta.' },
+      { id: 'p-elevador', name: 'Elevador', unit: 'intervalo', workWord: 'Trabajo', restWord: 'Descanso', note: 'Aprieta un poco (piso 1), un poco más (piso 2), al máximo (piso 3). Baja igual de lento. No subas de golpe.' },
+      { id: 'p-freno', name: 'El freno', unit: 'intervalo', workWord: 'Aprieta firme', restWord: 'Suelta', note: 'Aprieta firme, como pisar el freno, y exhala largo por la boca. Luego suelta del todo. Así se entrena parar cuando la intensidad sube.' },
+      { id: 'p-respira', name: 'Respira y suelta', note: 'Mano en el abdomen. Inhala y la panza sube; el piso está suelto. Exhala más largo que la inhalación. Termina más suelto que tenso.' },
+    ],
+    modes: [
+      {
+        id: 'principiante',
+        name: 'Principiante',
+        steps: [
+          { ex: 'p-localiza', seconds: 40 },
+          { ex: 'p-suelta', seconds: 40 },
+          { ex: 'p-lentas', reps: 10, work: 5, rest: 10 },
+          { ex: 'p-pulsos', reps: 3, work: 15, rest: 15 },
+          { ex: 'p-freno', reps: 6, work: 5, rest: 10 },
+          { ex: 'p-respira', seconds: 60 },
+        ],
+      },
+      {
+        id: 'intermedio',
+        name: 'Intermedio',
+        steps: [
+          { ex: 'p-localiza', seconds: 30 },
+          { ex: 'p-suelta', seconds: 40 },
+          { ex: 'p-lentas', reps: 10, work: 10, rest: 10 },
+          { ex: 'p-pulsos', reps: 3, work: 20, rest: 15 },
+          { ex: 'p-elevador', reps: 5, work: 12, rest: 6 },
+          { ex: 'p-freno', reps: 6, work: 8, rest: 10 },
+          { ex: 'p-respira', seconds: 60 },
+        ],
+      },
+    ],
+  };
+}
+
 export const isCircuit = (r) => r?.kind === 'circuit';
 /** Circuito de fuerza por rondas (Rutina C): se elige junto a A y B y cuenta para la meta. */
 export const isRounds = (r) => r?.kind === 'rounds';
 /** Circuito de movilidad (Despertar): no cuenta para la meta ni la racha. */
 export const isMobility = (r) => isCircuit(r) && r.mobility === true;
+
+/** Sesión guiada por pasos (Piso pélvico): movilidad con modos; no cuenta para la meta ni la racha. */
+export const isGuided = (r) => r?.kind === 'guided';
+
+/** Modo de una sesión guiada; sin id (o si no existe), el default. */
+export function guidedMode(r, modeId) {
+  const modes = r.modes || [];
+  return modes.find((m) => m.id === modeId) || modes.find((m) => m.id === r.defaultMode) || modes[0];
+}
+
+/** Segundos de un paso: un bloque, o intervalos de trabajo + descanso (cada uno con su descanso). */
+export const stepSeconds = (st) => (st.reps ? st.reps * (st.work + st.rest) : st.seconds);
+
+/** Duración de un modo en segundos: suma de sus pasos. */
+export function guidedSeconds(r, modeId) {
+  return guidedMode(r, modeId).steps.reduce((n, st) => n + stepSeconds(st), 0);
+}
+
+/**
+ * Línea de tiempo de un modo: una fase por bloque y dos por intervalo (trabajo, descanso).
+ * `step` es el índice del paso; `rep` el intervalo (desde 0).
+ */
+export function guidedPlan(r, modeId) {
+  const out = [];
+  guidedMode(r, modeId).steps.forEach((st, step) => {
+    if (!st.reps) { out.push({ step, phase: 'block', ms: st.seconds * 1000 }); return; }
+    for (let rep = 0; rep < st.reps; rep++) {
+      out.push({ step, rep, phase: 'work', ms: st.work * 1000 });
+      if (st.rest) out.push({ step, rep, phase: 'rest', ms: st.rest * 1000 });
+    }
+  });
+  return out;
+}
 
 /** Intervalos de trabajo de un circuito (rondas × ejercicios). */
 export function circuitIntervals(r) {
@@ -199,6 +315,7 @@ export function prescription(ex) {
 
 /** Series de una rutina de fuerza; en un circuito, sus intervalos de trabajo. */
 export function totalSets(routine) {
+  if (isGuided(routine)) return guidedMode(routine).steps.length;
   if (isCircuit(routine)) return circuitIntervals(routine);
   if (isRounds(routine)) return routine.rounds * routine.exercises.length;
   return routine.exercises.reduce((n, ex) => n + ex.sets, 0);
@@ -206,6 +323,7 @@ export function totalSets(routine) {
 
 /** Duración estimada en minutos (trabajo aproximado por serie + descansos). */
 export function estimateMinutes(routine) {
+  if (isGuided(routine)) return Math.round(guidedSeconds(routine) / 60);
   if (isCircuit(routine)) return Math.round(circuitSeconds(routine) / 60);
   if (isRounds(routine)) return Math.round(roundsSeconds(routine) / 60);
   let work = 0;
